@@ -1,0 +1,24 @@
+{
+  "name": "portveil-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Portveil: let AI assistants see your devices and move them between VPN locations.",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "portveil-mcp": "dist/index.js" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "keywords": ["mcp", "model-context-protocol", "vpn", "wireguard", "portveil", "ai-agents"],
+  "homepage": "https://portveil.com",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

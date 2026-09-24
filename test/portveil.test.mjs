@@ -29,8 +29,8 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
       if (u === "/v1/accounts/acct_0123456789abcdef") return send(200, { plan: "builder", device_limit: 25, device_count: 2 });
       let m = u.match(/^\/v1\/accounts\/acct_0123456789abcdef\/devices\/(dev_\w+)\/commands$/);
       if (m && req.method === "POST") {
-        // Like the live API: a read-only token gets 401 here, not 403.
-        if (req.headers.authorization === "Bearer clt_read") return send(401, { detail: "invalid token" });
+        // Like the live API (scoped_auth_strict since 2026-09-24): read-only token → 403.
+        if (req.headers.authorization === "Bearer clt_read") return send(403, { detail: "insufficient scope for this action" });
         const d = state.devices.find((x) => x.device_id === m[1]);
         if (!d.allow_remote) return send(409, { detail: { reason: "remote_disabled", command_id: "cmd_r" } });
         const b = JSON.parse(body);
@@ -103,7 +103,7 @@ test("clear errors for remote off, WireGuard app, read-only token, bad token", a
     const [box, phone] = await pv.devices();
     await assert.rejects(pv.move(box, SERVERS[1]), /remote control turned off/);
     await assert.rejects(pv.move(phone, SERVERS[1]), /WireGuard app/);
-    await assert.rejects(client(base, "clt_read").runCommand(dev(), "reconnect"), /needs an API token with "control" scope/);
+    await assert.rejects(client(base, "clt_read").runCommand(dev(), "reconnect"), /needs a token with "control" scope/);
     await assert.rejects(client(base, "clt_bad").devices(), (e) => e instanceof PortveilError && /rejected the token/.test(e.message));
   } finally { srv.close(); }
 });

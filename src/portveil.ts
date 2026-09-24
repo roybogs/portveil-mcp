@@ -1,7 +1,7 @@
 // Portveil API client and the logic behind the MCP tools. No MCP types here,
 // so it can be tested against a fake API.
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 export interface Device {
   device_id: string;

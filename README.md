@@ -23,7 +23,7 @@ Moves are verified: a tool only reports success after the device has switched **
 | `set_rotation` | Move a device automatically every N minutes (5–10080), optionally among chosen locations. Portveil runs the schedule, so the assistant can close | control |
 | `stop_rotation` | Turn scheduled rotation off | control |
 | `reconnect_device` | Re-establish a device's tunnel | control |
-| `disconnect_device` | Turn a device's VPN off (marked destructive, so assistants ask first) | control |
+| `disconnect_device` | Turn a device's VPN off (flagged destructive: a hint that tells well-behaved assistants to check with you first) | control |
 
 Devices can be named loosely ("scraper" finds "Scraper box"); an ambiguous name returns the choices instead of guessing.
 

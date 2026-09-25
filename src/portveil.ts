@@ -1,7 +1,7 @@
 // Portveil API client and the logic behind the MCP tools. No MCP types here,
 // so it can be tested against a fake API.
 
-export const VERSION = "0.1.1";
+export const VERSION = "0.2.0";
 
 export interface Device {
   device_id: string;
@@ -14,6 +14,15 @@ export interface Device {
   quality: string;
   handshake_age_s: number | null;
   last_seen_s_ago: number | null;
+  /** Temporary devices are deleted automatically at this time (unix seconds). */
+  expires_at?: number | null;
+  rotation?: Rotation | null;
+}
+
+export interface Rotation {
+  every_minutes: number;
+  /** Location ids to cycle through; null means every location. */
+  servers: string[] | null;
 }
 
 export interface Server {
@@ -63,7 +72,10 @@ export function describeDevice(d: Device, servers: Server[]): string {
   else if (d.exit_confirmed && d.quality === "good") state = `protected, exiting in ${place}`;
   else state = `connected to ${place}, not yet confirmed by the exit`;
   const remote = d.platform === "wireguard-app" ? "view only (WireGuard app)" : d.allow_remote ? "remote control on" : "remote control off";
-  return `${d.name} [${d.device_id}] (${d.platform}): ${state}; ${remote}`;
+  const extras: string[] = [];
+  if (d.rotation) extras.push(`rotates every ${d.rotation.every_minutes} min`);
+  if (d.expires_at) extras.push(`temporary, deleted ${new Date(d.expires_at * 1000).toISOString().replace(".000Z", "Z")}`);
+  return `${d.name} [${d.device_id}] (${d.platform}): ${state}; ${remote}${extras.length ? `; ${extras.join("; ")}` : ""}`;
 }
 
 /** Match a device by id, exact name, or a unique partial name (case-insensitive). */
@@ -138,6 +150,7 @@ export class Portveil {
         ? "Portveil rejected the token. Check PORTVEIL_TOKEN (an API token from the dashboard)."
         : 'Portveil refused this with your token. Moving, reconnecting or disconnecting devices needs an API token with "control" scope; a "read" token can only look.');
       case 403: throw new PortveilError(`This token isn't allowed to do that${detail ? ` (${detail})` : ""}. Moving or reconnecting devices needs a token with "control" scope.`);
+      case 400: throw new PortveilError(detail || "Portveil rejected the request.");
       case 404: throw new PortveilError("Not found. Check PORTVEIL_ACCOUNT_ID matches the token's account.");
       case 409: throw new PortveilError(detail === "remote_disabled" ? "That device has remote control turned off, so it can't be controlled from here." : `Conflict: ${detail || text}`);
       case 429: throw new PortveilError(`Portveil is rate limiting requests; try again in ${res.headers.get("retry-after") ?? "a few"} seconds.`);
@@ -158,6 +171,12 @@ export class Portveil {
     const c = await this.call<{ command_id: string; status: string }>("POST", `${this.acct()}/devices/${encodeURIComponent(deviceId)}/commands`,
       serverId ? { type, server_id: serverId } : { type });
     return { command_id: c.command_id, status: c.status, result: null };
+  }
+
+  /** Turn scheduled rotation on (every N minutes, optionally among some locations) or off (null). */
+  async setRotation(deviceId: string, everyMinutes: number | null, servers?: string[]): Promise<{ rotation: Rotation | null; next_rotation_at: number | null }> {
+    const body = everyMinutes === null ? { every_minutes: null } : servers?.length ? { every_minutes: everyMinutes, servers } : { every_minutes: everyMinutes };
+    return this.call("PUT", `${this.acct()}/devices/${encodeURIComponent(deviceId)}/rotation`, body);
   }
 
   async commandState(id: string): Promise<CommandState> {

@@ -5,6 +5,7 @@ Let an AI assistant see the devices on your [Portveil](https://portveil.com) acc
 > "Move my scraper box to Finland."
 > "Rotate every agent to a new location."
 > "Which of my devices aren't protected right now?"
+> "Rotate the scraper between the US and Finland every 15 minutes."
 
 Moves are verified: a tool only reports success after the device has switched **and** the exit server in the new location confirms it sees that device.
 
@@ -19,6 +20,8 @@ Moves are verified: a tool only reports success after the device has switched **
 | `recent_activity` | Recent moves, reconnects and changes, and who made them | read |
 | `move_device` | Move a device to a country or city ("Finland", "US", "Helsinki") | control |
 | `rotate_device` | Move a device to the next location | control |
+| `set_rotation` | Move a device automatically every N minutes (5–10080), optionally among chosen locations. Portveil runs the schedule, so the assistant can close | control |
+| `stop_rotation` | Turn scheduled rotation off | control |
 | `reconnect_device` | Re-establish a device's tunnel | control |
 | `disconnect_device` | Turn a device's VPN off (marked destructive, so assistants ask first) | control |
 

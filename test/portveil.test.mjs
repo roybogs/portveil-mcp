@@ -38,6 +38,14 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
         state.commands[id] = { ...b, device: d, polls: 0 };
         return send(202, { command_id: id, status: "queued" });
       }
+      m = u.match(/^\/v1\/accounts\/acct_0123456789abcdef\/devices\/(dev_\w+)\/rotation$/);
+      if (m && req.method === "PUT") {
+        const d = state.devices.find((x) => x.device_id === m[1]);
+        const b = JSON.parse(body);
+        if (b.every_minutes !== null && (b.servers?.length ?? 2) < 2) return send(400, { detail: "rotation needs at least two locations" });
+        d.rotation = b.every_minutes === null ? null : { every_minutes: b.every_minutes, servers: b.servers ?? null };
+        return send(200, { device_id: d.device_id, rotation: d.rotation, next_rotation_at: b.every_minutes === null ? null : 1790300000 });
+      }
       m = u.match(/^\/v1\/accounts\/acct_0123456789abcdef\/commands\/(cmd_\w+)$/);
       if (m) {
         const c = state.commands[m[1]];
@@ -117,7 +125,7 @@ test("the MCP server lists its tools and answers through the protocol", async ()
     await c.connect(transport);
     const { tools } = await c.listTools();
     assert.deepEqual(tools.map((t) => t.name).sort(), ["account_info", "device_status", "disconnect_device", "list_devices",
-      "list_locations", "move_device", "recent_activity", "reconnect_device", "rotate_device"]);
+      "list_locations", "move_device", "recent_activity", "reconnect_device", "rotate_device", "set_rotation", "stop_rotation"]);
     assert.equal(tools.find((t) => t.name === "disconnect_device").annotations.destructiveHint, true);
     const list = await c.callTool({ name: "list_devices", arguments: {} });
     assert.match(list.content[0].text, /Scraper box \[dev_a\] \(linux\): protected, exiting in United States/);
@@ -129,5 +137,15 @@ test("the MCP server lists its tools and answers through the protocol", async ()
     const bad = await c.callTool({ name: "move_device", arguments: { device: "toaster", location: "US" } });
     assert.equal(bad.isError, true);
     assert.match((await c.callTool({ name: "recent_activity", arguments: {} })).content[0].text, /command:switch_server {2}Scraper box/);
+    const sched = await c.callTool({ name: "set_rotation", arguments: { device: "scraper", every_minutes: 15, locations: ["US", "Finland"] } });
+    assert.equal(sched.isError, undefined, sched.content[0].text);
+    assert.match(sched.content[0].text, /every 15 minutes, cycling through United States \(US West\) → Finland \(Helsinki\)/);
+    assert.deepEqual(state.devices[0].rotation, { every_minutes: 15, servers: ["srv-us-1", "srv-eu-1"] });
+    assert.match((await c.callTool({ name: "list_devices", arguments: {} })).content[0].text, /rotates every 15 min/);
+    const tooFew = await c.callTool({ name: "set_rotation", arguments: { device: "scraper", every_minutes: 15, locations: ["US"] } });
+    assert.equal(tooFew.isError, true);
+    assert.match(tooFew.content[0].text, /at least two locations/);
+    assert.match((await c.callTool({ name: "stop_rotation", arguments: { device: "scraper" } })).content[0].text, /no longer rotate/);
+    assert.equal(state.devices[0].rotation, null);
   } finally { await c.close(); srv.close(); }
 });

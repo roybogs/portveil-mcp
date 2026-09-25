@@ -93,6 +93,36 @@ server.registerTool("rotate_device", {
   return pv.move(d, nextLocation(d.server_id, servers));
 }));
 
+server.registerTool("set_rotation", {
+  title: "Rotate a device on a schedule",
+  description: "Make Portveil move a device to the next location automatically every N minutes (5 to 10080), optionally cycling only through some locations. Portveil does the moves itself, so the assistant doesn't need to stay running. Needs control scope.",
+  inputSchema: {
+    device: deviceArg,
+    every_minutes: z.number().int().min(5).max(10080).describe("Minutes between moves (5 to 10080)"),
+    locations: z.array(z.string().min(1)).optional().describe('Locations to cycle through, e.g. ["US", "Finland"]. Omit for every location.'),
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+}, ({ device, every_minutes, locations }) => run(async () => {
+  const [devices, servers] = await Promise.all([pv.devices(), pv.servers()]);
+  const d = resolveDevice(device, devices);
+  const chosen = locations?.map((l) => resolveLocation(l, servers));
+  const r = await pv.setRotation(d.device_id, every_minutes, chosen?.map((s) => s.id));
+  const where = chosen ? chosen.map(locationLabel).join(" → ") : "every location";
+  const next = r.next_rotation_at ? ` First move around ${new Date(r.next_rotation_at * 1000).toISOString().replace(".000Z", "Z")}.` : "";
+  return `${d.name} will now move every ${every_minutes} minutes, cycling through ${where}.${next}`;
+}));
+
+server.registerTool("stop_rotation", {
+  title: "Stop scheduled rotation",
+  description: "Turn off automatic rotation for a device. It stays at its current location.",
+  inputSchema: { device: deviceArg },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+}, ({ device }) => run(async () => {
+  const d = resolveDevice(device, await pv.devices());
+  await pv.setRotation(d.device_id, null);
+  return `${d.name} will no longer rotate automatically. It stays where it is.`;
+}));
+
 server.registerTool("reconnect_device", {
   title: "Reconnect device",
   description: "Tell a device to re-establish its VPN tunnel at its current location. Useful when it shows as connected but not confirmed.",

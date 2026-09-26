@@ -259,3 +259,8 @@ test("add_device saves private tunnel files for apps and gives Linux the setup c
     assert.match(await readFile(join(dir, "Portveil-Finland (Helsinki).conf"), "utf8"), /PublicKey = PUB1=/);
   } finally { await control.close(); await admin.close(); srv.close(); }
 });
+
+test("an idle WireGuard-app device reads as idle, not unconfirmed", () => {
+  const d = dev({ platform: "wireguard-app", quality: "fair", server_id: "srv-eu-1" });
+  assert.match(describeDevice(d, SERVERS), /idle: tunnel to Finland \(Helsinki\) confirmed but no traffic/);
+});

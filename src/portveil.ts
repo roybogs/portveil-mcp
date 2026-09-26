@@ -3,7 +3,7 @@
 
 import { generateKeyPairSync } from "node:crypto";
 
-export const VERSION = "0.4.0";
+export const VERSION = "0.4.1";
 
 export interface Device {
   device_id: string;
@@ -14,6 +14,9 @@ export interface Device {
   connected: boolean;
   exit_confirmed: boolean;
   quality: string;
+  /** Plain-English status from the API: label (Protected, Idle, Verifying, Stale, Offline) and an explanation. */
+  status_label?: string;
+  status_detail?: string;
   handshake_age_s: number | null;
   last_seen_s_ago: number | null;
   /** Temporary devices are deleted automatically at this time (unix seconds). */
@@ -126,6 +129,7 @@ export function describeDevice(d: Device, servers: Server[]): string {
   let state: string;
   if (!d.connected) state = "offline";
   else if (d.exit_confirmed && d.quality === "good") state = `protected, exiting in ${place}`;
+  else if (d.exit_confirmed && d.quality === "fair") state = `idle: tunnel to ${place} confirmed but no traffic right now (it resumes on the device's next use)`;
   else state = `connected to ${place}, not yet confirmed by the exit`;
   const remote = d.platform === "wireguard-app" ? "view only (WireGuard app)" : d.allow_remote ? "remote control on" : "remote control off";
   const extras: string[] = [];

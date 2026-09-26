@@ -74,7 +74,7 @@ server.registerTool("get_device", {
   const [devices, servers] = await Promise.all([pv.devices(), pv.servers()]);
   const d = resolveDevice(device, devices);
   const seen = d.last_seen_s_ago == null ? "never" : `${Math.round(d.last_seen_s_ago)}s ago`;
-  return `${describeDevice(d, servers)}\nLast report: ${seen}.`;
+  return `${describeDevice(d, servers)}\nLast report: ${seen}.${d.status_detail ? `\n${d.status_detail}` : ""}`;
 }));
 
 server.registerTool("get_account", {

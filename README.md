@@ -34,6 +34,8 @@ Devices can be named loosely ("scraper" finds "Scraper box"); an ambiguous name 
 
 ## Setup
 
+No account yet? [Start free](https://portveil.com/free/) with just an email, no card.
+
 1. In the [Portveil dashboard](https://portveil.com/dashboard/), create an **API token**. Choose **control** scope to let the assistant move devices, or **read** to let it only look. Don't give it your account key.
 2. Note your account ID (`acct_…`).
 3. Add the server to your assistant:
@@ -55,6 +57,16 @@ claude mcp add portveil -e PORTVEIL_ACCOUNT_ID=acct_… -e PORTVEIL_TOKEN=clt_�
   }
 }
 ```
+
+**Hermes Agent**: Hermes only installs npm packages older than 14 days, so install into its own folder and run it with node:
+```bash
+cd ~ && npm install --prefix ~/.hermes/mcp-servers/portveil portveil-mcp@latest
+echo 'PORTVEIL_TOKEN=clt_…' >> ~/.hermes/.env
+hermes mcp add portveil --command node \
+  --env PORTVEIL_ACCOUNT_ID=acct_… 'PORTVEIL_TOKEN=${PORTVEIL_TOKEN}' \
+  --args ~/.hermes/mcp-servers/portveil/node_modules/portveil-mcp/dist/index.js
+```
+For Hermes to use it well (when to act, what to confirm first, how to add devices), also install the skill in [`skills/portveil/SKILL.md`](skills/portveil/SKILL.md): copy that folder to `~/.hermes/skills/portveil/`.
 
 Devices must be running the Portveil app or the Portveil agent with remote control on. Devices using the plain WireGuard app are shown but can't be moved.
 

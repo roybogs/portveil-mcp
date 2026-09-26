@@ -66,7 +66,11 @@ hermes mcp add portveil --command node \
   --env PORTVEIL_ACCOUNT_ID=acct_… 'PORTVEIL_TOKEN=${PORTVEIL_TOKEN}' \
   --args ~/.hermes/mcp-servers/portveil/node_modules/portveil-mcp/dist/index.js
 ```
-For Hermes to use it well (when to act, what to confirm first, how to add devices), also install the skill in [`skills/portveil/SKILL.md`](skills/portveil/SKILL.md): copy that folder to `~/.hermes/skills/portveil/`.
+For Hermes to use it well (when to act, what to confirm first, how to add devices), also install the Portveil skill from [ClawHub](https://clawhub.ai/roybogs/portveil):
+```bash
+hermes skills install roybogs/portveil
+```
+(Source: [`skills/portveil/SKILL.md`](skills/portveil/SKILL.md).)
 
 Devices must be running the Portveil app or the Portveil agent with remote control on. Devices using the plain WireGuard app are shown but can't be moved.
 

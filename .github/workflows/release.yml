@@ -1,0 +1,46 @@
+# Release: push a tag like v0.2.2 and GitHub publishes to npm and the MCP Registry.
+# No tokens or 2FA: npm trusted publishing and the registry's GitHub OIDC login both use
+# the short-lived identity GitHub gives this workflow (permissions: id-token: write).
+# One-time setup on npmjs.com: portveil-mcp → Settings → Trusted Publisher → GitHub Actions,
+# owner roybogs, repository portveil-mcp, workflow release.yml.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Check the tag matches every version field
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          SRV=$(node -p "require('./server.json').version")
+          CODE=$(grep -oE 'VERSION = "[^"]+"' src/portveil.ts | cut -d'"' -f2)
+          echo "tag=$TAG package=$PKG server.json=$SRV code=$CODE"
+          [ "$TAG" = "$PKG" ] && [ "$TAG" = "$SRV" ] && [ "$TAG" = "$CODE" ]
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Publish to npm (trusted publishing, no token)
+        run: npm install -g npm@latest && npm publish --provenance --access public
+
+      - name: Publish to the MCP Registry (GitHub OIDC)
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

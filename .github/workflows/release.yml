@@ -37,7 +37,18 @@ jobs:
       - run: npm test
 
       - name: Publish to npm (trusted publishing, no token)
-        run: npm install -g npm@latest && npm publish --provenance --access public
+        run: |
+          npm install -g npm@latest
+          V="${GITHUB_REF_NAME#v}"
+          # Re-runs skip a version that's already on npm.
+          if npm view "portveil-mcp@$V" version >/dev/null 2>&1; then echo "portveil-mcp@$V already on npm"; else npm publish --provenance --access public; fi
+
+      - name: Wait until npm serves the new version
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          # The MCP Registry checks npm, and a fresh publish takes a minute or two to appear.
+          for i in $(seq 1 40); do npm view "portveil-mcp@$V" version >/dev/null 2>&1 && exit 0; sleep 15; done
+          echo "npm still doesn't show $V after 10 minutes"; exit 1
 
       - name: Publish to the MCP Registry (GitHub OIDC)
         run: |

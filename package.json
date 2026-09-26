@@ -1,7 +1,7 @@
 {
   "name": "portveil-mcp",
   "mcpName": "io.github.roybogs/portveil-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MCP server for Portveil: let AI assistants see your devices and move them between VPN locations.",
   "license": "MIT",
   "type": "module",

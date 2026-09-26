@@ -13,9 +13,9 @@ Moves are verified: a tool only reports success after the device has switched **
 
 | Tool | What it does | Needs |
 |---|---|---|
-| `list_devices` | Every device: protected or not, where it exits, remote control on/off | read |
+| `list_devices` | Every device: protected or not, where it exits, live speed (↓/↑ Mbps), remote control on/off | read |
 | `list_locations` | The locations you can move to | read |
-| `device_status` | One device's current state | read |
+| `device_status` | One device's current state, including live speed | read |
 | `account_info` | Plan and devices used | read |
 | `recent_activity` | Recent moves, reconnects and changes, and who made them | read |
 | `move_device` | Move a device to a country or city ("Finland", "US", "Helsinki") | control |

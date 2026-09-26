@@ -1,7 +1,7 @@
 // Portveil API client and the logic behind the MCP tools. No MCP types here,
 // so it can be tested against a fake API.
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 
 export interface Device {
   device_id: string;
@@ -17,6 +17,21 @@ export interface Device {
   /** Temporary devices are deleted automatically at this time (unix seconds). */
   expires_at?: number | null;
   rotation?: Rotation | null;
+  /** Live speed through the connected exit (about a 15 s average); null when offline or not measured yet. */
+  speed?: Speed | null;
+}
+
+export interface Speed {
+  server_id: string;
+  down_mbps: number;
+  up_mbps: number;
+  measured_at: number;
+}
+
+/** "↓ 42.3 Mbps ↑ 6.1 Mbps", or "idle" when nothing is moving. */
+export function describeSpeed(speed: Speed): string {
+  if (speed.down_mbps < 0.1 && speed.up_mbps < 0.1) return "idle";
+  return `↓ ${speed.down_mbps.toFixed(1)} Mbps ↑ ${speed.up_mbps.toFixed(1)} Mbps`;
 }
 
 export interface Rotation {
@@ -73,6 +88,7 @@ export function describeDevice(d: Device, servers: Server[]): string {
   else state = `connected to ${place}, not yet confirmed by the exit`;
   const remote = d.platform === "wireguard-app" ? "view only (WireGuard app)" : d.allow_remote ? "remote control on" : "remote control off";
   const extras: string[] = [];
+  if (d.connected && d.speed) extras.push(`speed ${describeSpeed(d.speed)}`);
   if (d.rotation) extras.push(`rotates every ${d.rotation.every_minutes} min`);
   if (d.expires_at) extras.push(`temporary, deleted ${new Date(d.expires_at * 1000).toISOString().replace(".000Z", "Z")}`);
   return `${d.name} [${d.device_id}] (${d.platform}): ${state}; ${remote}${extras.length ? `; ${extras.join("; ")}` : ""}`;

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError } from "../dist/portveil.js";
+import { Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice } from "../dist/portveil.js";
 
 const SERVERS = [
   { id: "srv-us-1", name: "US West", region: "us" },
@@ -65,6 +65,15 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
 
 const client = (base, token = "clt_good") => new Portveil({ apiBase: base, accountId: "acct_0123456789abcdef", token,
   sleep: async () => {}, ackTimeoutMs: 1000, confirmTimeoutMs: 50 });
+
+test("device descriptions include live speed only while connected", () => {
+  const speed = { server_id: "srv-us-1", down_mbps: 42.34, up_mbps: 6.1, measured_at: 1 };
+  assert.match(describeDevice(dev({ speed }), SERVERS), /speed ↓ 42\.3 Mbps ↑ 6\.1 Mbps/);
+  assert.match(describeDevice(dev({ speed: { ...speed, down_mbps: 0, up_mbps: 0.04 } }), SERVERS), /speed idle/);
+  assert.doesNotMatch(describeDevice(dev({ speed: null }), SERVERS), /speed/);
+  assert.doesNotMatch(describeDevice(dev({ connected: false, speed }), SERVERS), /speed/);
+  assert.doesNotMatch(describeDevice(dev({}), SERVERS), /speed/); // older API without the field
+});
 
 test("device and location matching", () => {
   const devices = [dev(), dev({ device_id: "dev_b", name: "Scraper two" }), dev({ device_id: "dev_c", name: "MacBook" })];

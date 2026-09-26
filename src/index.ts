@@ -11,8 +11,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import {
-  Portveil, PortveilError, VERSION, describeDevice, isWaiting, locationLabel, nextLocation, resolveDevice, resolveLocation,
+  Portveil, PortveilError, VERSION, agentSetup, describeDevice, wgConfig, wgKeypair, isWaiting, locationLabel, nextLocation, resolveDevice, resolveLocation,
 } from "./portveil.js";
 
 const accountId = process.env.PORTVEIL_ACCOUNT_ID?.trim() ?? "";
@@ -25,7 +28,8 @@ if (token.startsWith("cla_")) {
   console.error("portveil-mcp: warning: that's your account key. Create a scoped API token in the dashboard instead, so an assistant never holds full access.");
 }
 
-const pv = new Portveil({ apiBase: process.env.PORTVEIL_API || "https://api.portveil.com", accountId, token });
+const apiBase = (process.env.PORTVEIL_API || "https://api.portveil.com").replace(/\/+$/, "");
+const pv = new Portveil({ apiBase, accountId, token });
 const server = new McpServer({ name: "portveil", version: VERSION });
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -43,7 +47,7 @@ const deviceArg = z.string().min(1).describe('Which device: its name, a unique p
 
 // Tool names follow one verb_noun pattern: list_*, get_*, and an action verb + device/rotation.
 // Scopes: "read" tokens can use the list_/get_ tools; "control" adds moving, rotating, reconnecting
-// and disconnecting; "admin" adds renaming, remote-control settings and removal.
+// and disconnecting; "admin" adds adding, renaming, remote-control settings and removal.
 
 server.registerTool("list_devices", {
   title: "List devices",
@@ -172,6 +176,46 @@ server.registerTool("disconnect_device", {
   if (st.status === "acked") return `${d.name} is disconnected. Its traffic no longer goes through Portveil.`;
   if (isWaiting(st.status)) return `Sent. ${d.name} hasn't picked it up yet (it may be offline).`;
   return `${d.name} did not disconnect: ${st.status}${st.result ? ` (${st.result})` : ""}.`;
+}));
+
+server.registerTool("add_device", {
+  title: "Add device",
+  description: "Add a new device to the account. kind \"phone_or_computer\" (iPhone, Android, Mac, Windows using the WireGuard app): creates the device now and saves one WireGuard tunnel file per location, with a private key made locally, into a folder on the machine running this MCP server; the key is never shown in the reply. Import a file in the WireGuard app to connect. These devices are view-only: they can't be moved remotely. kind \"linux_machine\" (a server or the machine an agent runs on): returns the exact commands to run as root on that machine; it makes its own key and registers itself, and can then be moved, rotated and switched with the other tools. Uses one device slot (see get_account). Needs an admin-scope token for phone_or_computer.",
+  inputSchema: {
+    name: z.string().trim().min(1).max(64).describe('Display name for the new device, e.g. "Miguel iPhone" or "scraper-box"'),
+    kind: z.enum(["phone_or_computer", "linux_machine"]).describe("phone_or_computer: WireGuard app on a phone or laptop. linux_machine: a Linux server or agent machine running the Portveil agent"),
+    temporary_minutes: z.number().int().min(5).max(43200).optional().describe("phone_or_computer only: delete the device automatically after this many minutes (5 to 43200, i.e. 30 days). Omit for a permanent device"),
+    folder: z.string().min(1).optional().describe("phone_or_computer only: folder to save the tunnel files in. Default ~/Portveil/<name>"),
+    split_tunnel: z.boolean().optional().describe("linux_machine only: default true, so a remote server keeps its SSH session. false sends all of its traffic through Portveil"),
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+}, ({ name, kind, temporary_minutes, folder, split_tunnel }) => run(async () => {
+  const acct = await pv.account();
+  const slots = acct.device_limit === null ? "" : ` (${acct.device_count} of ${acct.device_limit} devices used)`;
+  if (acct.device_limit !== null && acct.device_count >= acct.device_limit) {
+    throw new PortveilError(`The plan's device limit is reached${slots}. Remove a device or upgrade first.`);
+  }
+  if (kind === "linux_machine") {
+    return `Run these as root on the machine you're adding. It makes its own VPN key, so this can't be done from here. The token prompt doesn't echo; use an admin-scope API token or the account key, and never paste it into a chat.\n\n` +
+      agentSetup(apiBase, accountId, name, split_tunnel ?? true) +
+      `\n\nThe daemon keeps running; install it as a service to survive reboots. "${name}" then appears in list_devices, and can be moved once its exit confirms it${slots}.`;
+  }
+  const dir = resolve(folder?.replace(/^~(?=$|\/)/, homedir()) ?? join(homedir(), "Portveil", name.replace(/[^\w .-]+/g, "_")));
+  const k = wgKeypair();
+  const d = await pv.addDevice(name, "wireguard-app", k.pub, false, temporary_minutes);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const files: string[] = [];
+  for (const s of d.servers) {
+    const addr = d.addresses[s.id];
+    if (!addr) continue;
+    const file = join(dir, `Portveil-${locationLabel(s).replace(/[^\w .()-]+/g, "_")}.conf`);
+    await writeFile(file, wgConfig(k.priv, addr, s), { mode: 0o600 });
+    files.push(file);
+  }
+  const expires = d.expires_at ? ` It deletes itself at ${new Date(d.expires_at * 1000).toISOString().replace(".000Z", "Z")}.` : "";
+  return `Added "${name}" [${d.device_id}].${expires} Its tunnel files are saved on the machine running this MCP server, one per location:\n` +
+    files.map((f) => `- ${f}`).join("\n") +
+    `\n\nOn a Mac or PC: WireGuard → Import tunnel(s) from file. On a phone: send the files to it (AirDrop, or save to Files) and open them with WireGuard. The files hold the device's private key: keep them private and delete copies once imported. Switch countries by turning on a different tunnel in the app.`;
 }));
 
 server.registerTool("update_device", {

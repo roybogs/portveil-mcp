@@ -24,6 +24,7 @@ Moves are verified: a tool only reports success after the device has switched **
 | `stop_rotation` | Turn scheduled rotation off | control |
 | `reconnect_device` | Re-establish a device's tunnel | control |
 | `disconnect_device` | Turn a device's VPN off (flagged destructive: a hint that tells well-behaved assistants to check with you first) | control |
+| `add_device` | Add a device. Phones and laptops (WireGuard app): creates it and saves its tunnel files locally, key never shown in chat. Linux servers and agent machines: gives the exact commands to run on that machine, which makes its own key and registers itself | admin (phones/laptops) |
 | `update_device` | Rename a device and/or turn its remote control on or off | admin |
 | `remove_device` | Remove a device for good (flagged destructive) | admin |
 

@@ -1,7 +1,9 @@
 // Portveil API client and the logic behind the MCP tools. No MCP types here,
 // so it can be tested against a fake API.
 
-export const VERSION = "0.3.0";
+import { generateKeyPairSync } from "node:crypto";
+
+export const VERSION = "0.4.0";
 
 export interface Device {
   device_id: string;
@@ -44,6 +46,45 @@ export interface Server {
   id: string;
   name: string;
   region: string;
+  endpoint_host?: string;
+  endpoint_port?: number;
+  pubkey?: string;
+}
+
+/** What the API returns for a newly registered device. */
+export interface NewDevice {
+  device_id: string;
+  addresses: Record<string, string>;
+  expires_at: number | null;
+  servers: Required<Server>[];
+}
+
+/** A fresh WireGuard keypair (base64), made locally: the private key never leaves this machine. */
+export function wgKeypair(): { priv: string; pub: string } {
+  const { publicKey, privateKey } = generateKeyPairSync("x25519");
+  const raw = (der: Buffer) => der.subarray(der.length - 32).toString("base64");
+  return { priv: raw(privateKey.export({ format: "der", type: "pkcs8" })), pub: raw(publicKey.export({ format: "der", type: "spki" })) };
+}
+
+/** The WireGuard app tunnel file for one exit, the same as the setup page makes. */
+export function wgConfig(priv: string, address: string, s: Required<Server>): string {
+  return `[Interface]\nPrivateKey = ${priv}\nAddress = ${address.split("/")[0]}/32\nDNS = 1.1.1.1, 9.9.9.9\nMTU = 1420\n\n` +
+    `[Peer]\nPublicKey = ${s.pubkey}\nEndpoint = ${s.endpoint_host}:${s.endpoint_port}\n` +
+    `AllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n`;
+}
+
+/** Commands that set up a Linux machine as a Portveil device. It makes its own key, so they run on that machine. */
+export function agentSetup(apiBase: string, accountId: string, name: string, splitTunnel: boolean): string {
+  const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
+  return [
+    "apt install -y wireguard-tools curl",
+    "curl -fsSLO https://portveil.com/downloads/portveil-agent",
+    "curl -fsSL https://portveil.com/downloads/portveil-agent.sha256 | sha256sum -c -",
+    "chmod +x portveil-agent",
+    "read -rsp 'Admin API token or account key: ' PORTVEIL_ACCOUNT_TOKEN && export PORTVEIL_ACCOUNT_TOKEN && echo",
+    `./portveil-agent register --control ${apiBase} --account-id ${accountId} --name ${q(name)}${splitTunnel ? " --split-tunnel" : ""}`,
+    "./portveil-agent daemon",
+  ].join("\n");
 }
 
 export interface CommandState {
@@ -201,6 +242,13 @@ export class Portveil {
     return this.adminOnly(() => this.call("PATCH", `${this.acct()}/devices/${encodeURIComponent(deviceId)}`, body));
   }
 
+  /** Register a device with a public key made elsewhere. Needs an admin-scope token. */
+  async addDevice(name: string, platform: string, pubkey: string, allowRemote: boolean, ttlMinutes?: number): Promise<NewDevice> {
+    const body: Record<string, unknown> = { name, platform, peer_pubkey: pubkey, allow_remote: allowRemote };
+    if (ttlMinutes !== undefined) body.ttl_minutes = ttlMinutes;
+    return this.adminOnly(() => this.call("POST", `${this.acct()}/devices`, body));
+  }
+
   /** Remove a device for good (its key stops working everywhere). Needs an admin-scope token. */
   async removeDevice(deviceId: string): Promise<void> {
     await this.adminOnly(() => this.call("DELETE", `${this.acct()}/devices/${encodeURIComponent(deviceId)}`));
@@ -211,7 +259,7 @@ export class Portveil {
       return await fn();
     } catch (e) {
       if (e instanceof PortveilError && /refused this with your token|isn't allowed to do that/.test(e.message)) {
-        throw new PortveilError('Renaming, changing remote control or removing devices needs an API token with "admin" scope. Create one in the dashboard, or make the change there.');
+        throw new PortveilError('Adding, renaming, changing remote control or removing devices needs an API token with "admin" scope. Create one in the dashboard, or make the change there.');
       }
       throw e;
     }

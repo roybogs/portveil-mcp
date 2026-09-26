@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice } from "../dist/portveil.js";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createPrivateKey, createPublicKey } from "node:crypto";
+import { wgKeypair, agentSetup, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice } from "../dist/portveil.js";
 
 const SERVERS = [
   { id: "srv-us-1", name: "US West", region: "us" },
@@ -25,7 +29,7 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
       if (!["Bearer clt_good", "Bearer clt_read", "Bearer clt_admin"].includes(req.headers.authorization)) return send(401, { detail: "invalid token" });
       const u = req.url;
       if (u === "/v1/servers") return send(200, { servers: SERVERS });
-      if (u === "/v1/accounts/acct_0123456789abcdef/devices") return send(200, { devices: state.devices });
+      if (u === "/v1/accounts/acct_0123456789abcdef/devices" && req.method === "GET") return send(200, { devices: state.devices });
       if (u === "/v1/accounts/acct_0123456789abcdef") return send(200, { plan: "builder", device_limit: 25, device_count: 2 });
       let m = u.match(/^\/v1\/accounts\/acct_0123456789abcdef\/devices\/(dev_\w+)\/commands$/);
       if (m && req.method === "POST") {
@@ -37,6 +41,15 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
         const id = `cmd_${Object.keys(state.commands).length + 1}`;
         state.commands[id] = { ...b, device: d, polls: 0 };
         return send(202, { command_id: id, status: "queued" });
+      }
+      if (u === "/v1/accounts/acct_0123456789abcdef/devices" && req.method === "POST") {
+        if (req.headers.authorization !== "Bearer clt_admin") return send(401, { detail: "invalid token" });
+        const b = JSON.parse(body);
+        state.registered = b;
+        state.devices.push(dev({ device_id: "dev_new", name: b.name, platform: b.platform, allow_remote: b.allow_remote, connected: false }));
+        return send(201, { device_id: "dev_new", device_token: "cld_x", expires_at: b.ttl_minutes ? 1790300000 : null,
+          addresses: { "srv-us-1": "10.8.0.9/32", "srv-eu-1": "10.9.0.9/32" },
+          servers: SERVERS.map((x, i) => ({ ...x, endpoint_host: `exit${i}.example`, endpoint_port: 51820, pubkey: `PUB${i}=`, health_url: "" })) });
       }
       m = u.match(/^\/v1\/accounts\/acct_0123456789abcdef\/devices\/(dev_\w+)$/);
       if (m && (req.method === "PATCH" || req.method === "DELETE")) {
@@ -143,7 +156,7 @@ test("the MCP server lists its tools and answers through the protocol", async ()
   try {
     await c.connect(transport);
     const { tools } = await c.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), ["disconnect_device", "get_account", "get_device", "list_activity",
+    assert.deepEqual(tools.map((t) => t.name).sort(), ["add_device", "disconnect_device", "get_account", "get_device", "list_activity",
       "list_devices", "list_locations", "move_device", "reconnect_device", "remove_device", "rotate_device", "start_rotation",
       "stop_rotation", "update_device"]);
     for (const t of tools) assert.match(t.name, /^[a-z]+_[a-z]+$/, `verb_noun: ${t.name}`);
@@ -195,5 +208,54 @@ test("rename, remote control and removal need an admin token and say so", async 
     const gone = await admin.callTool({ name: "remove_device", arguments: { device: "crawler" } });
     assert.match(gone.content[0].text, /was removed/);
     assert.deepEqual(state.devices.map((d) => d.device_id), ["dev_b"]);
+  } finally { await control.close(); await admin.close(); srv.close(); }
+});
+
+test("WireGuard keys are a real X25519 pair", () => {
+  const { priv, pub } = wgKeypair();
+  assert.equal(Buffer.from(priv, "base64").length, 32);
+  const der = Buffer.concat([Buffer.from("302e020100300506032b656e04220420", "hex"), Buffer.from(priv, "base64")]);
+  const derivedPub = createPublicKey(createPrivateKey({ key: der, format: "der", type: "pkcs8" })).export({ format: "der", type: "spki" });
+  assert.equal(derivedPub.subarray(-32).toString("base64"), pub);
+});
+
+test("agent setup commands quote the name and verify the download", () => {
+  const cmd = agentSetup("https://api.portveil.com", "acct_0123456789abcdef", "Bob's box", true);
+  assert.match(cmd, /sha256sum -c -/);
+  assert.match(cmd, /--name 'Bob'\\''s box' --split-tunnel/);
+  assert.doesNotMatch(agentSetup("https://api.portveil.com", "acct_0123456789abcdef", "x", false), /split-tunnel/);
+});
+
+test("add_device saves private tunnel files for apps and gives Linux the setup commands", async () => {
+  const { srv, state, base } = await fakeApi();
+  const start = (token) => new StdioClientTransport({ command: process.execPath, args: ["dist/index.js"],
+    env: { ...process.env, PORTVEIL_ACCOUNT_ID: "acct_0123456789abcdef", PORTVEIL_TOKEN: token, PORTVEIL_API: base } });
+  const control = new Client({ name: "test", version: "1" });
+  const admin = new Client({ name: "test", version: "1" });
+  const dir = join(await mkdtemp(join(tmpdir(), "pv-")), "phone");
+  try {
+    await control.connect(start("clt_good"));
+    const refused = await control.callTool({ name: "add_device", arguments: { name: "Phone 2", kind: "phone_or_computer", folder: dir } });
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /"admin" scope/);
+    const linux = await control.callTool({ name: "add_device", arguments: { name: "scraper-2", kind: "linux_machine" } });
+    assert.equal(linux.isError, undefined, linux.content[0].text);
+    assert.match(linux.content[0].text, /--account-id acct_0123456789abcdef --name 'scraper-2' --split-tunnel/);
+    assert.equal(state.registered, undefined, "linux setup must not register from here");
+
+    await admin.connect(start("clt_admin"));
+    const added = await admin.callTool({ name: "add_device", arguments: { name: "Phone 2", kind: "phone_or_computer", folder: dir, temporary_minutes: 60 } });
+    assert.equal(added.isError, undefined, added.content[0].text);
+    assert.deepEqual({ ...state.registered, peer_pubkey: undefined }, { name: "Phone 2", platform: "wireguard-app", allow_remote: false, ttl_minutes: 60, peer_pubkey: undefined });
+    assert.doesNotMatch(added.content[0].text, /PrivateKey/);
+    const us = join(dir, "Portveil-United States (US West).conf");
+    assert.ok(added.content[0].text.includes(us));
+    const conf = await readFile(us, "utf8");
+    assert.match(conf, /Address = 10\.8\.0\.9\/32/);
+    assert.match(conf, /Endpoint = exit0\.example:51820/);
+    const key = conf.match(/PrivateKey = (.+)/)[1];
+    assert.doesNotMatch(added.content[0].text, new RegExp(key.replace(/[+/=]/g, "\\$&")));
+    assert.equal((await stat(us)).mode & 0o777, 0o600);
+    assert.match(await readFile(join(dir, "Portveil-Finland (Helsinki).conf"), "utf8"), /PublicKey = PUB1=/);
   } finally { await control.close(); await admin.close(); srv.close(); }
 });

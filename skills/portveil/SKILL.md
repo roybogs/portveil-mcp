@@ -3,12 +3,32 @@ name: portveil
 description: See and control a Portveil VPN (WireGuard, US and Finland exits) from Hermes. Check which devices and agent machines are protected, move a machine to another country, rotate its location on a schedule, reconnect it, or add a new device. Use when the user asks whether a machine is protected, where its traffic exits, or to change or rotate its location.
 version: 1.0.0
 author: Portveil (github.com/roybogs/portveil-mcp)
-license: MIT
 platforms: [linux, macos]
 metadata:
   hermes:
     tags: [vpn, wireguard, privacy, networking, location, agents, mcp]
     category: security
+  openclaw:
+    requires:
+      env:
+        - PORTVEIL_TOKEN
+        - PORTVEIL_ACCOUNT_ID
+      bins:
+        - node
+        - npm
+    primaryEnv: PORTVEIL_TOKEN
+    envVars:
+      - name: PORTVEIL_TOKEN
+        required: true
+        description: Portveil API token (clt_…) from the dashboard; read, control or admin scope.
+      - name: PORTVEIL_ACCOUNT_ID
+        required: true
+        description: Portveil account ID (acct_…), shown in the dashboard.
+      - name: PORTVEIL_API
+        required: false
+        description: Override the API base URL (default https://api.portveil.com).
+    homepage: https://portveil.com
+    emoji: "🛡️"
 setup:
   help: "Start free at https://portveil.com/free/ (no card). Then in the dashboard (https://portveil.com/dashboard/) create an API token: read to look, control to move devices, admin to add devices."
   collect_secrets:

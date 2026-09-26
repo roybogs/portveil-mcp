@@ -15,15 +15,19 @@ Moves are verified: a tool only reports success after the device has switched **
 |---|---|---|
 | `list_devices` | Every device: protected or not, where it exits, live speed (↓/↑ Mbps), remote control on/off | read |
 | `list_locations` | The locations you can move to | read |
-| `device_status` | One device's current state, including live speed | read |
-| `account_info` | Plan and devices used | read |
-| `recent_activity` | Recent moves, reconnects and changes, and who made them | read |
+| `get_device` | One device's current state, including live speed and any rotation | read |
+| `get_account` | Plan and devices used | read |
+| `list_activity` | Recent moves, reconnects and changes, and which token made them | read |
 | `move_device` | Move a device to a country or city ("Finland", "US", "Helsinki") | control |
-| `rotate_device` | Move a device to the next location | control |
-| `set_rotation` | Move a device automatically every N minutes (5–10080), optionally among chosen locations. Portveil runs the schedule, so the assistant can close | control |
+| `rotate_device` | Move a device once to the next location | control |
+| `start_rotation` | Move a device automatically every N minutes (5–10080), optionally among chosen locations. Portveil runs the schedule, so the assistant can close | control |
 | `stop_rotation` | Turn scheduled rotation off | control |
 | `reconnect_device` | Re-establish a device's tunnel | control |
 | `disconnect_device` | Turn a device's VPN off (flagged destructive: a hint that tells well-behaved assistants to check with you first) | control |
+| `update_device` | Rename a device and/or turn its remote control on or off | admin |
+| `remove_device` | Remove a device for good (flagged destructive) | admin |
+
+Tool names changed in 0.3.0 to one verb_noun pattern: `device_status` → `get_device`, `account_info` → `get_account`, `recent_activity` → `list_activity`, `set_rotation` → `start_rotation`.
 
 Devices can be named loosely ("scraper" finds "Scraper box"); an ambiguous name returns the choices instead of guessing.
 

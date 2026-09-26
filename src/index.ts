@@ -39,11 +39,15 @@ async function run(fn: () => Promise<string>): Promise<Result> {
   }
 }
 
-const deviceArg = z.string().min(1).describe('Device name (or part of it, e.g. "scraper") or its device ID (dev_…)');
+const deviceArg = z.string().min(1).describe('Which device: its name, a unique part of its name (e.g. "scraper"), or its device ID (dev_…). Case-insensitive. Get names and IDs from list_devices.');
+
+// Tool names follow one verb_noun pattern: list_*, get_*, and an action verb + device/rotation.
+// Scopes: "read" tokens can use the list_/get_ tools; "control" adds moving, rotating, reconnecting
+// and disconnecting; "admin" adds renaming, remote-control settings and removal.
 
 server.registerTool("list_devices", {
   title: "List devices",
-  description: "List every device on the Portveil account: whether each is protected, which country its traffic exits from, and whether it accepts remote control.",
+  description: "List every device on the Portveil account, one line each: whether it's protected (connected AND confirmed by the exit server), which country it exits from, its live download/upload speed while connected, and whether it accepts remote control. Use this first to see what's there or to find a device's exact name; use get_device for one device. Read-only.",
   annotations: { readOnlyHint: true, openWorldHint: false },
 }, () => run(async () => {
   const [devices, servers] = await Promise.all([pv.devices(), pv.servers()]);
@@ -53,13 +57,13 @@ server.registerTool("list_devices", {
 
 server.registerTool("list_locations", {
   title: "List locations",
-  description: "List the VPN exit locations (countries) a device can be moved to.",
+  description: "List the exit locations (country, city and location ID) that devices can be moved to. Use it before move_device or start_rotation when you're unsure what's available. Every plan can use every location. Read-only.",
   annotations: { readOnlyHint: true, openWorldHint: false },
 }, () => run(async () => (await pv.servers()).map((s) => `- ${locationLabel(s)} [${s.id}]`).join("\n")));
 
-server.registerTool("device_status", {
-  title: "Device status",
-  description: "Show one device's current state: connected or not, the location it exits from, and whether the exit server confirms it.",
+server.registerTool("get_device", {
+  title: "Get device",
+  description: "Get one device's current state: online or offline, the location it exits from, whether that exit server confirms the tunnel, its live speed, any rotation schedule, and when it last reported. Use it to check a device before or after an action. Read-only.",
   inputSchema: { device: deviceArg },
   annotations: { readOnlyHint: true, openWorldHint: false },
 }, ({ device }) => run(async () => {
@@ -69,12 +73,33 @@ server.registerTool("device_status", {
   return `${describeDevice(d, servers)}\nLast report: ${seen}.`;
 }));
 
+server.registerTool("get_account", {
+  title: "Get account",
+  description: "Get the account's plan and how many devices it uses out of its limit. Use it when asked about the plan or before suggesting adding devices. Read-only.",
+  annotations: { readOnlyHint: true, openWorldHint: false },
+}, () => run(async () => {
+  const a = await pv.account();
+  return `Plan: ${a.plan ?? "none"}. Devices: ${a.device_count}${a.device_limit ? ` of ${a.device_limit}` : ""}.`;
+}));
+
+server.registerTool("list_activity", {
+  title: "List activity",
+  description: "List recent actions on the account (moves, reconnects, rotations, renames, tokens created), newest first, with the token that made each. Use it to answer \"what changed?\" or to audit an assistant's actions. Read-only.",
+  inputSchema: { limit: z.number().int().min(1).max(100).default(20).describe("How many entries to return, newest first (1–100, default 20)") },
+  annotations: { readOnlyHint: true, openWorldHint: false },
+}, ({ limit }) => run(async () => {
+  const [{ entries }, devices] = await Promise.all([pv.audit(limit), pv.devices()]);
+  if (entries.length === 0) return "No activity yet.";
+  const name = (id: string | null) => (id ? devices.find((d) => d.device_id === id)?.name ?? id : "account");
+  return entries.map((e) => `- ${new Date(e.created_at * 1000).toISOString().replace(".000Z", "Z")}  ${e.action}  ${name(e.device_id)}  (by ${e.issued_by})`).join("\n");
+}));
+
 server.registerTool("move_device", {
-  title: "Move device to a location",
-  description: "Move a device's VPN traffic to exit from another country. Waits until the device switches and the new exit server confirms it (usually 10–30 s). Needs a token with control scope and remote control enabled on the device.",
+  title: "Move device",
+  description: "Move a device's traffic to exit from a chosen location. Waits until the device switches and the new exit server confirms it (usually 10–30 s), and says plainly if that didn't happen. Safe to repeat: moving to where it already is does nothing. Only works on machines running the Portveil agent with remote control on (phones using the WireGuard app switch on the device itself). Needs a control-scope token. To just go somewhere different, use rotate_device.",
   inputSchema: {
     device: deviceArg,
-    location: z.string().min(1).describe('Where to exit: a country or city ("Finland", "US", "Helsinki") or a location ID (srv-eu-1)'),
+    location: z.string().min(1).describe('Where to exit: a country, city or region ("Finland", "US", "Helsinki") or a location ID from list_locations (e.g. srv-eu-1)'),
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, ({ device, location }) => run(async () => {
@@ -83,8 +108,8 @@ server.registerTool("move_device", {
 }));
 
 server.registerTool("rotate_device", {
-  title: "Rotate device to the next location",
-  description: "Move a device to the next available location, so its traffic exits from somewhere new. Waits for the move to be confirmed.",
+  title: "Rotate device",
+  description: "Move a device once to the next location in the list, so its traffic exits from somewhere new. Same checks and waiting as move_device. Each call moves again, so it isn't idempotent. For repeated automatic moves use start_rotation instead. Needs a control-scope token.",
   inputSchema: { device: deviceArg },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, ({ device }) => run(async () => {
@@ -93,13 +118,13 @@ server.registerTool("rotate_device", {
   return pv.move(d, nextLocation(d.server_id, servers));
 }));
 
-server.registerTool("set_rotation", {
-  title: "Rotate a device on a schedule",
-  description: "Make Portveil move a device to the next location automatically every N minutes (5 to 10080), optionally cycling only through some locations. Portveil does the moves itself, so the assistant doesn't need to stay running. Needs control scope.",
+server.registerTool("start_rotation", {
+  title: "Start rotation",
+  description: "Make Portveil move a device to the next location automatically every N minutes, optionally cycling through chosen locations only. Portveil runs the schedule itself, so the assistant doesn't need to stay running. Calling it again replaces the schedule. Stop it with stop_rotation. Needs a control-scope token and a Portveil-agent device.",
   inputSchema: {
     device: deviceArg,
-    every_minutes: z.number().int().min(5).max(10080).describe("Minutes between moves (5 to 10080)"),
-    locations: z.array(z.string().min(1)).optional().describe('Locations to cycle through, e.g. ["US", "Finland"]. Omit for every location.'),
+    every_minutes: z.number().int().min(5).max(10080).describe("Minutes between moves: 5 to 10080 (one week)"),
+    locations: z.array(z.string().min(1)).optional().describe('Locations to cycle through, e.g. ["US", "Finland"]; at least two. Omit to cycle through every location.'),
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, ({ device, every_minutes, locations }) => run(async () => {
@@ -113,8 +138,8 @@ server.registerTool("set_rotation", {
 }));
 
 server.registerTool("stop_rotation", {
-  title: "Stop scheduled rotation",
-  description: "Turn off automatic rotation for a device. It stays at its current location.",
+  title: "Stop rotation",
+  description: "Turn off a device's automatic rotation. The device stays at its current location. Safe to call when no rotation is set. Needs a control-scope token.",
   inputSchema: { device: deviceArg },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, ({ device }) => run(async () => {
@@ -125,7 +150,7 @@ server.registerTool("stop_rotation", {
 
 server.registerTool("reconnect_device", {
   title: "Reconnect device",
-  description: "Tell a device to re-establish its VPN tunnel at its current location. Useful when it shows as connected but not confirmed.",
+  description: "Tell a device to re-establish its VPN tunnel at its current location, without moving it. Use when it shows connected but not confirmed, or traffic seems stuck. Traffic may pause for a few seconds. Needs a control-scope token and a Portveil-agent device.",
   inputSchema: { device: deviceArg },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, ({ device }) => run(async () => {
@@ -138,7 +163,7 @@ server.registerTool("reconnect_device", {
 
 server.registerTool("disconnect_device", {
   title: "Disconnect device",
-  description: "Turn off a device's VPN tunnel. Its traffic stops going through Portveil until it reconnects. Confirm with the user before using this.",
+  description: "Turn off a device's VPN tunnel. Its traffic stops going through Portveil (and loses VPN protection) until it reconnects. The device stays on the account. Confirm with the user first. Needs a control-scope token and a Portveil-agent device.",
   inputSchema: { device: deviceArg },
   annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 }, ({ device }) => run(async () => {
@@ -149,25 +174,32 @@ server.registerTool("disconnect_device", {
   return `${d.name} did not disconnect: ${st.status}${st.result ? ` (${st.result})` : ""}.`;
 }));
 
-server.registerTool("recent_activity", {
-  title: "Recent activity",
-  description: "Show recent actions on the account (moves, reconnects, renames, tokens created), newest first, with who issued each.",
-  inputSchema: { limit: z.number().int().min(1).max(100).default(20).describe("How many entries (1–100)") },
-  annotations: { readOnlyHint: true, openWorldHint: false },
-}, ({ limit }) => run(async () => {
-  const [{ entries }, devices] = await Promise.all([pv.audit(limit), pv.devices()]);
-  if (entries.length === 0) return "No activity yet.";
-  const name = (id: string | null) => (id ? devices.find((d) => d.device_id === id)?.name ?? id : "account");
-  return entries.map((e) => `- ${new Date(e.created_at * 1000).toISOString().replace(".000Z", "Z")}  ${e.action}  ${name(e.device_id)}  (by ${e.issued_by})`).join("\n");
+server.registerTool("update_device", {
+  title: "Update device",
+  description: "Rename a device and/or turn remote control on or off for it. Turning remote control off stops move, rotate, reconnect and disconnect for that device until it's turned back on. Change only what's given; safe to repeat. Needs an admin-scope token.",
+  inputSchema: {
+    device: deviceArg,
+    name: z.string().min(1).max(64).optional().describe("New display name, 1–64 characters"),
+    remote_control: z.boolean().optional().describe("true lets tokens move and control this device; false blocks it"),
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+}, ({ device, name, remote_control }) => run(async () => {
+  if (name === undefined && remote_control === undefined) throw new PortveilError("Nothing to change: give a new name, remote_control, or both.");
+  const d = resolveDevice(device, await pv.devices());
+  const u = await pv.updateDevice(d.device_id, { name, allow_remote: remote_control });
+  const parts = [name !== undefined ? `renamed to "${u.name ?? name}"` : "", remote_control !== undefined ? `remote control ${remote_control ? "on" : "off"}` : ""].filter(Boolean);
+  return `${d.name}: ${parts.join(", ")}.`;
 }));
 
-server.registerTool("account_info", {
-  title: "Account info",
-  description: "Show the account's plan and how many devices it uses out of its limit.",
-  annotations: { readOnlyHint: true, openWorldHint: false },
-}, () => run(async () => {
-  const a = await pv.account();
-  return `Plan: ${a.plan ?? "none"}. Devices: ${a.device_count}${a.device_limit ? ` of ${a.device_limit}` : ""}.`;
+server.registerTool("remove_device", {
+  title: "Remove device",
+  description: "Permanently remove a device from the account: its VPN key stops working at every exit and its slot is freed. It can't be undone; the device would have to be set up again. Confirm with the user first, naming the device. Needs an admin-scope token.",
+  inputSchema: { device: deviceArg },
+  annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+}, ({ device }) => run(async () => {
+  const d = resolveDevice(device, await pv.devices());
+  await pv.removeDevice(d.device_id);
+  return `${d.name} was removed from the account. Its VPN key no longer works.`;
 }));
 
 await server.connect(new StdioServerTransport());

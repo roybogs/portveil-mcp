@@ -22,7 +22,7 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
     req.on("end", () => {
       state.seen.push({ method: req.method, url: req.url, ua: req.headers["user-agent"], auth: req.headers.authorization });
       const send = (code, obj, headers = {}) => { res.writeHead(code, { "Content-Type": "application/json", ...headers }); res.end(JSON.stringify(obj)); };
-      if (req.headers.authorization !== "Bearer clt_good" && req.headers.authorization !== "Bearer clt_read") return send(401, { detail: "invalid token" });
+      if (!["Bearer clt_good", "Bearer clt_read", "Bearer clt_admin"].includes(req.headers.authorization)) return send(401, { detail: "invalid token" });
       const u = req.url;
       if (u === "/v1/servers") return send(200, { servers: SERVERS });
       if (u === "/v1/accounts/acct_0123456789abcdef/devices") return send(200, { devices: state.devices });
@@ -37,6 +37,16 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
         const id = `cmd_${Object.keys(state.commands).length + 1}`;
         state.commands[id] = { ...b, device: d, polls: 0 };
         return send(202, { command_id: id, status: "queued" });
+      }
+      m = u.match(/^\/v1\/accounts\/acct_0123456789abcdef\/devices\/(dev_\w+)$/);
+      if (m && (req.method === "PATCH" || req.method === "DELETE")) {
+        if (req.headers.authorization !== "Bearer clt_admin") return send(403, { detail: "insufficient scope for this action" });
+        const i = state.devices.findIndex((x) => x.device_id === m[1]);
+        if (req.method === "DELETE") { state.devices.splice(i, 1); res.writeHead(204); return res.end(); }
+        const b = JSON.parse(body);
+        if (b.name !== undefined) state.devices[i].name = b.name;
+        if (b.allow_remote !== undefined) state.devices[i].allow_remote = b.allow_remote;
+        return send(200, { device_id: m[1], name: state.devices[i].name, allow_remote: state.devices[i].allow_remote });
       }
       m = u.match(/^\/v1\/accounts\/acct_0123456789abcdef\/devices\/(dev_\w+)\/rotation$/);
       if (m && req.method === "PUT") {
@@ -133,8 +143,11 @@ test("the MCP server lists its tools and answers through the protocol", async ()
   try {
     await c.connect(transport);
     const { tools } = await c.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), ["account_info", "device_status", "disconnect_device", "list_devices",
-      "list_locations", "move_device", "recent_activity", "reconnect_device", "rotate_device", "set_rotation", "stop_rotation"]);
+    assert.deepEqual(tools.map((t) => t.name).sort(), ["disconnect_device", "get_account", "get_device", "list_activity",
+      "list_devices", "list_locations", "move_device", "reconnect_device", "remove_device", "rotate_device", "start_rotation",
+      "stop_rotation", "update_device"]);
+    for (const t of tools) assert.match(t.name, /^[a-z]+_[a-z]+$/, `verb_noun: ${t.name}`);
+    assert.equal(tools.find((t) => t.name === "remove_device").annotations.destructiveHint, true);
     assert.equal(tools.find((t) => t.name === "disconnect_device").annotations.destructiveHint, true);
     const list = await c.callTool({ name: "list_devices", arguments: {} });
     assert.match(list.content[0].text, /Scraper box \[dev_a\] \(linux\): protected, exiting in United States/);
@@ -145,16 +158,42 @@ test("the MCP server lists its tools and answers through the protocol", async ()
     assert.equal(state.devices[0].server_id, "srv-eu-1");
     const bad = await c.callTool({ name: "move_device", arguments: { device: "toaster", location: "US" } });
     assert.equal(bad.isError, true);
-    assert.match((await c.callTool({ name: "recent_activity", arguments: {} })).content[0].text, /command:switch_server {2}Scraper box/);
-    const sched = await c.callTool({ name: "set_rotation", arguments: { device: "scraper", every_minutes: 15, locations: ["US", "Finland"] } });
+    assert.match((await c.callTool({ name: "list_activity", arguments: {} })).content[0].text, /command:switch_server {2}Scraper box/);
+    const sched = await c.callTool({ name: "start_rotation", arguments: { device: "scraper", every_minutes: 15, locations: ["US", "Finland"] } });
     assert.equal(sched.isError, undefined, sched.content[0].text);
     assert.match(sched.content[0].text, /every 15 minutes, cycling through United States \(US West\) → Finland \(Helsinki\)/);
     assert.deepEqual(state.devices[0].rotation, { every_minutes: 15, servers: ["srv-us-1", "srv-eu-1"] });
     assert.match((await c.callTool({ name: "list_devices", arguments: {} })).content[0].text, /rotates every 15 min/);
-    const tooFew = await c.callTool({ name: "set_rotation", arguments: { device: "scraper", every_minutes: 15, locations: ["US"] } });
+    const tooFew = await c.callTool({ name: "start_rotation", arguments: { device: "scraper", every_minutes: 15, locations: ["US"] } });
     assert.equal(tooFew.isError, true);
     assert.match(tooFew.content[0].text, /at least two locations/);
     assert.match((await c.callTool({ name: "stop_rotation", arguments: { device: "scraper" } })).content[0].text, /no longer rotate/);
     assert.equal(state.devices[0].rotation, null);
   } finally { await c.close(); srv.close(); }
+});
+
+test("rename, remote control and removal need an admin token and say so", async () => {
+  const { srv, state, base } = await fakeApi();
+  const start = (token) => new StdioClientTransport({ command: process.execPath, args: ["dist/index.js"],
+    env: { ...process.env, PORTVEIL_ACCOUNT_ID: "acct_0123456789abcdef", PORTVEIL_TOKEN: token, PORTVEIL_API: base } });
+  const control = new Client({ name: "test", version: "1" });
+  const admin = new Client({ name: "test", version: "1" });
+  try {
+    await control.connect(start("clt_good"));
+    const refused = await control.callTool({ name: "remove_device", arguments: { device: "scraper" } });
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /"admin" scope/);
+    assert.equal(state.devices.length, 2);
+    await admin.connect(start("clt_admin"));
+    const nothing = await admin.callTool({ name: "update_device", arguments: { device: "scraper" } });
+    assert.equal(nothing.isError, true);
+    const upd = await admin.callTool({ name: "update_device", arguments: { device: "scraper", name: "Crawler", remote_control: false } });
+    assert.equal(upd.isError, undefined, upd.content[0].text);
+    assert.match(upd.content[0].text, /renamed to "Crawler", remote control off/);
+    assert.equal(state.devices[0].name, "Crawler");
+    assert.equal(state.devices[0].allow_remote, false);
+    const gone = await admin.callTool({ name: "remove_device", arguments: { device: "crawler" } });
+    assert.match(gone.content[0].text, /was removed/);
+    assert.deepEqual(state.devices.map((d) => d.device_id), ["dev_b"]);
+  } finally { await control.close(); await admin.close(); srv.close(); }
 });

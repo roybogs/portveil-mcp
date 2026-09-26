@@ -1,7 +1,7 @@
 // Portveil API client and the logic behind the MCP tools. No MCP types here,
 // so it can be tested against a fake API.
 
-export const VERSION = "0.2.1";
+export const VERSION = "0.3.0";
 
 export interface Device {
   device_id: string;
@@ -195,6 +195,28 @@ export class Portveil {
     return this.call("PUT", `${this.acct()}/devices/${encodeURIComponent(deviceId)}/rotation`, body);
   }
 
+  /** Rename a device and/or switch remote control. Needs an admin-scope token. */
+  async updateDevice(deviceId: string, change: { name?: string; allow_remote?: boolean }): Promise<{ name?: string; allow_remote?: boolean }> {
+    const body = Object.fromEntries(Object.entries(change).filter(([, v]) => v !== undefined));
+    return this.adminOnly(() => this.call("PATCH", `${this.acct()}/devices/${encodeURIComponent(deviceId)}`, body));
+  }
+
+  /** Remove a device for good (its key stops working everywhere). Needs an admin-scope token. */
+  async removeDevice(deviceId: string): Promise<void> {
+    await this.adminOnly(() => this.call("DELETE", `${this.acct()}/devices/${encodeURIComponent(deviceId)}`));
+  }
+
+  private async adminOnly<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof PortveilError && /refused this with your token|isn't allowed to do that/.test(e.message)) {
+        throw new PortveilError('Renaming, changing remote control or removing devices needs an API token with "admin" scope. Create one in the dashboard, or make the change there.');
+      }
+      throw e;
+    }
+  }
+
   async commandState(id: string): Promise<CommandState> {
     return this.call("GET", `${this.acct()}/commands/${encodeURIComponent(id)}`);
   }
@@ -228,7 +250,7 @@ export class Portveil {
     if (device.server_id === target.id && device.exit_confirmed) return `${device.name} is already exiting in ${place}; nothing to do.`;
     const st = await this.runCommand(device, "switch_server", target);
     if (st.status === "delivered") {
-      return `${device.name} is switching to ${place} but hasn't reported back yet. Check with device_status in a minute.`;
+      return `${device.name} is switching to ${place} but hasn't reported back yet. Check with get_device in a minute.`;
     }
     if (isWaiting(st.status)) {
       return `Sent. ${device.name} hasn't picked up the move to ${place} yet (it may be offline); it will when it's next online, until the command expires.`;
@@ -237,6 +259,6 @@ export class Portveil {
     const confirmed = await this.waitConfirmed(device.device_id, target.id);
     return confirmed
       ? `Done. ${device.name} now exits in ${place}, confirmed by the ${place} exit server.`
-      : `${device.name} switched to ${place}, but that exit hasn't confirmed the connection yet. Check again with device_status in a minute.`;
+      : `${device.name} switched to ${place}, but that exit hasn't confirmed the connection yet. Check again with get_device in a minute.`;
   }
 }

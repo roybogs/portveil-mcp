@@ -15,7 +15,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  Portveil, PortveilError, VERSION, agentSetup, describeDevice, wgConfig, wgKeypair, isWaiting, locationLabel, nextLocation, resolveDevice, resolveLocation,
+  Portveil, PortveilError, VERSION, agentSetup, describeDevice, wgConfig, wgKeypair, isWaiting, localHint, locationLabel, nextLocation, resolveDevice, resolveLocation,
 } from "./portveil.js";
 
 const accountId = process.env.PORTVEIL_ACCOUNT_ID?.trim() ?? "";
@@ -61,9 +61,12 @@ server.registerTool("list_devices", {
 
 server.registerTool("list_locations", {
   title: "List locations",
-  description: "List the exit locations (country, city and location ID) that devices can be moved to. Use it before move_device or start_rotation when you're unsure what's available. Every plan can use every location. Read-only.",
+  description: "List the exit locations (country, city and location ID) that devices can be moved to, with each one's local timezone and language. Use it before move_device or start_rotation when you're unsure what's available, or to make a browser on a moved machine match its exit (sites compare the browser's timezone with its IP's country). Every plan can use every location. Read-only.",
   annotations: { readOnlyHint: true, openWorldHint: false },
-}, () => run(async () => (await pv.servers()).map((s) => `- ${locationLabel(s)} [${s.id}]`).join("\n")));
+}, () => run(async () => (await pv.servers()).map((s) => {
+  const hint = localHint(s);
+  return `- ${locationLabel(s)} [${s.id}]${hint ? `: ${hint}` : ""}`;
+}).join("\n")));
 
 server.registerTool("get_device", {
   title: "Get device",

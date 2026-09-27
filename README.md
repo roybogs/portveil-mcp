@@ -60,7 +60,7 @@ claude mcp add portveil -e PORTVEIL_ACCOUNT_ID=acct_… -e PORTVEIL_TOKEN=clt_�
 
 **Hermes Agent**: Hermes only installs npm packages older than 14 days, so install into its own folder and run it with node:
 ```bash
-cd ~ && npm install --prefix ~/.hermes/mcp-servers/portveil portveil-mcp@0.4.2
+cd ~ && npm install --prefix ~/.hermes/mcp-servers/portveil portveil-mcp@0.4.3
 echo 'PORTVEIL_TOKEN=clt_…' >> ~/.hermes/.env
 hermes mcp add portveil --command node \
   --env PORTVEIL_ACCOUNT_ID=acct_… 'PORTVEIL_TOKEN=${PORTVEIL_TOKEN}' \

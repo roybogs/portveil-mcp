@@ -3,7 +3,7 @@
 
 import { generateKeyPairSync } from "node:crypto";
 
-export const VERSION = "0.4.2";
+export const VERSION = "0.4.3";
 
 export interface Device {
   device_id: string;
@@ -52,6 +52,9 @@ export interface Server {
   endpoint_host?: string;
   endpoint_port?: number;
   pubkey?: string;
+  timezone?: string;
+  locale?: string;
+  accept_language?: string;
 }
 
 /** What the API returns for a newly registered device. */
@@ -113,10 +116,27 @@ export interface Options {
 }
 
 // Friendly names for the exits we run; anything new falls back to the server's own name.
-const KNOWN: Record<string, { country: string; code: string; place: string; aliases: string[] }> = {
-  "srv-us-1": { country: "United States", code: "US", place: "US West", aliases: ["usa", "america", "united states", "us", "us west", "west"] },
-  "srv-eu-1": { country: "Finland", code: "FI", place: "Helsinki", aliases: ["finland", "fi", "helsinki", "eu", "europe"] },
+const KNOWN: Record<string, { country: string; code: string; place: string; aliases: string[]; timezone: string; locale: string; accept_language: string }> = {
+  "srv-us-1": { country: "United States", code: "US", place: "US West", aliases: ["usa", "america", "united states", "us", "us west", "west"],
+    timezone: "America/Los_Angeles", locale: "en-US", accept_language: "en-US,en;q=0.9" },
+  "srv-eu-1": { country: "Finland", code: "FI", place: "Helsinki", aliases: ["finland", "fi", "helsinki", "eu", "europe"],
+    timezone: "Europe/Helsinki", locale: "fi-FI", accept_language: "en-US,en;q=0.9,fi;q=0.8" },
 };
+
+/** What a local browser at this exit looks like: the API's values, else the built-in ones. */
+export function localProfile(s: Server): { timezone: string; locale: string; accept_language: string } | undefined {
+  const k = KNOWN[s.id];
+  const timezone = s.timezone ?? k?.timezone;
+  if (!timezone) return undefined;
+  return { timezone, locale: s.locale ?? k?.locale ?? "", accept_language: s.accept_language ?? k?.accept_language ?? "" };
+}
+
+/** One line an agent can act on so its browser matches the exit. */
+export function localHint(s: Server): string {
+  const p = localProfile(s);
+  if (!p) return "";
+  return `timezone ${p.timezone}${p.locale ? `, local language ${p.locale}` : ""}${p.accept_language ? ` (Accept-Language for English pages: ${p.accept_language})` : ""}`;
+}
 
 export function locationLabel(s: Pick<Server, "id" | "name">): string {
   const k = KNOWN[s.id];
@@ -310,7 +330,7 @@ export class Portveil {
     if (st.status !== "acked") return `${device.name} did not move: ${st.status}${st.result ? ` (${st.result})` : ""}. It is still on its previous location.`;
     const confirmed = await this.waitConfirmed(device.device_id, target.id);
     return confirmed
-      ? `Done. ${device.name} now exits in ${place}, confirmed by the ${place} exit server.`
+      ? `Done. ${device.name} now exits in ${place}, confirmed by the ${place} exit server.${localHint(target) ? ` If a browser on it should look local, set its ${localHint(target)}.` : ""}`
       : `${device.name} switched to ${place}, but that exit hasn't confirmed the connection yet. Check again with get_device in a minute.`;
   }
 }

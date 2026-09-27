@@ -7,7 +7,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { wgKeypair, agentSetup, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice } from "../dist/portveil.js";
+import { wgKeypair, agentSetup, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, localHint } from "../dist/portveil.js";
 
 const SERVERS = [
   { id: "srv-us-1", name: "US West", region: "us" },
@@ -168,6 +168,10 @@ test("the MCP server lists its tools and answers through the protocol", async ()
     const moved = await c.callTool({ name: "rotate_device", arguments: { device: "scraper" } });
     assert.equal(moved.isError, undefined, moved.content[0].text);
     assert.match(moved.content[0].text, /now exits in Finland/);
+    assert.match(moved.content[0].text, /set its timezone Europe\/Helsinki, local language fi-FI/);
+    const places = (await c.callTool({ name: "list_locations", arguments: {} })).content[0].text;
+    assert.match(places, /United States \(US West\) \[srv-us-1\]: timezone America\/Los_Angeles, local language en-US/);
+    assert.match(places, /Finland \(Helsinki\) \[srv-eu-1\]: timezone Europe\/Helsinki/);
     assert.equal(state.devices[0].server_id, "srv-eu-1");
     const bad = await c.callTool({ name: "move_device", arguments: { device: "toaster", location: "US" } });
     assert.equal(bad.isError, true);
@@ -264,4 +268,11 @@ test("add_device saves private tunnel files for apps and gives Linux the setup c
 test("an idle WireGuard-app device reads as idle, not unconfirmed", () => {
   const d = dev({ platform: "wireguard-app", quality: "fair", server_id: "srv-eu-1" });
   assert.match(describeDevice(d, SERVERS), /idle: tunnel to Finland \(Helsinki\) confirmed but no traffic/);
+});
+
+test("an exit's timezone and language come from the API when it sends them", () => {
+  assert.equal(localHint({ id: "srv-jp-1", name: "Japan", region: "ap", timezone: "Asia/Tokyo", locale: "ja-JP" }),
+    "timezone Asia/Tokyo, local language ja-JP");
+  assert.match(localHint({ id: "srv-eu-1", name: "EU", region: "eu" }), /^timezone Europe\/Helsinki/);
+  assert.equal(localHint({ id: "srv-new", name: "New", region: "x" }), "");
 });

@@ -240,7 +240,8 @@ test("add_device saves private tunnel files for apps and gives Linux the setup c
     assert.match(refused.content[0].text, /"admin" scope/);
     const linux = await control.callTool({ name: "add_device", arguments: { name: "scraper-2", kind: "linux_machine" } });
     assert.equal(linux.isError, undefined, linux.content[0].text);
-    assert.match(linux.content[0].text, /--account-id acct_0123456789abcdef --name 'scraper-2' --split-tunnel/);
+    assert.match(linux.content[0].text, /--account-id acct_0123456789abcdef --name 'scraper-2'\n/);
+    assert.doesNotMatch(linux.content[0].text, /--split-tunnel/);   // full tunnel by default (keeps inbound SSH)
     assert.equal(state.registered, undefined, "linux setup must not register from here");
 
     await admin.connect(start("clt_admin"));

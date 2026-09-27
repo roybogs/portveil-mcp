@@ -3,7 +3,7 @@
 
 import { generateKeyPairSync } from "node:crypto";
 
-export const VERSION = "0.4.1";
+export const VERSION = "0.4.2";
 
 export interface Device {
   device_id: string;
@@ -80,7 +80,7 @@ export function wgConfig(priv: string, address: string, s: Required<Server>): st
 export function agentSetup(apiBase: string, accountId: string, name: string, splitTunnel: boolean): string {
   const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
   return [
-    "apt install -y wireguard-tools curl",
+    "apt install -y wireguard-tools curl nftables",
     "curl -fsSLO https://portveil.com/downloads/portveil-agent",
     "curl -fsSL https://portveil.com/downloads/portveil-agent.sha256 | sha256sum -c -",
     "chmod +x portveil-agent",

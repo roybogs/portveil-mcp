@@ -1,7 +1,7 @@
 ---
 name: portveil
 description: See and control a Portveil VPN (WireGuard, US and Finland exits) from Hermes. Check which devices and agent machines are protected, move a machine to another country, rotate its location on a schedule, reconnect it, or add a new device. Use when the user asks whether a machine is protected, where its traffic exits, or to change or rotate its location.
-version: 1.0.0
+version: 1.0.1
 author: Portveil (github.com/roybogs/portveil-mcp)
 platforms: [linux, macos]
 metadata:
@@ -143,8 +143,10 @@ ask the user which one they meant instead of guessing.
    `remove_device`: always confirm first, even when asked directly. It's permanent: the device's
    key stops working and it has to be set up again.
 5. To add the machine Hermes itself runs on, use `add_device` with kind `linux_machine` and give
-   the user the returned commands to run. On a remote server keep the `--split-tunnel` flag the
-   commands include; without it the VPN would also carry the SSH session and cut the connection.
+   the user the returned commands to run. They set up a full tunnel: everything the machine
+   connects to goes through Portveil, while SSH and other incoming connections keep their normal
+   route, so a remote server stays reachable. Don't add `--split-tunnel`: it's an advanced mode in
+   which the machine's own internet traffic does not go through Portveil at all.
 
 ## Pitfalls
 

@@ -186,7 +186,7 @@ server.registerTool("add_device", {
     kind: z.enum(["phone_or_computer", "linux_machine"]).describe("phone_or_computer: WireGuard app on a phone or laptop. linux_machine: a Linux server or agent machine running the Portveil agent"),
     temporary_minutes: z.number().int().min(5).max(43200).optional().describe("phone_or_computer only: delete the device automatically after this many minutes (5 to 43200, i.e. 30 days). Omit for a permanent device"),
     folder: z.string().min(1).optional().describe("phone_or_computer only: folder to save the tunnel files in. Default ~/Portveil/<name>"),
-    split_tunnel: z.boolean().optional().describe("linux_machine only: default true, so a remote server keeps its SSH session. false sends all of its traffic through Portveil"),
+    split_tunnel: z.boolean().optional().describe("linux_machine only, advanced: default false (full tunnel), which sends everything the machine connects to through Portveil and keeps SSH and other incoming connections on their normal route, so remote servers stay reachable. true only reaches Portveil's own network: the machine's internet traffic would NOT go through Portveil"),
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 }, ({ name, kind, temporary_minutes, folder, split_tunnel }) => run(async () => {
@@ -197,8 +197,8 @@ server.registerTool("add_device", {
   }
   if (kind === "linux_machine") {
     return `Run these as root on the machine you're adding. It makes its own VPN key, so this can't be done from here. The token prompt doesn't echo; use an admin-scope API token or the account key, and never paste it into a chat.\n\n` +
-      agentSetup(apiBase, accountId, name, split_tunnel ?? true) +
-      `\n\nThe daemon keeps running; install it as a service to survive reboots. "${name}" then appears in list_devices, and can be moved once its exit confirms it${slots}.`;
+      agentSetup(apiBase, accountId, name, split_tunnel ?? false) +
+      `\n\nIts own traffic then goes through Portveil, while SSH and other incoming connections keep their normal route, so a remote session stays up. The daemon keeps running; install it as a service to survive reboots. "${name}" then appears in list_devices, and can be moved once its exit confirms it${slots}.`;
   }
   const dir = resolve(folder?.replace(/^~(?=$|\/)/, homedir()) ?? join(homedir(), "Portveil", name.replace(/[^\w .-]+/g, "_")));
   const k = wgKeypair();

@@ -24,6 +24,8 @@ export interface Device {
   rotation?: Rotation | null;
   /** Live speed through the connected exit (about a 15 s average); null when offline or not measured yet. */
   speed?: Speed | null;
+  /** The machine's own timezone, reported by the Portveil agent (null for the WireGuard app or older agents). */
+  timezone?: string | null;
 }
 
 export interface Speed {
@@ -131,11 +133,24 @@ export function localProfile(s: Server): { timezone: string; locale: string; acc
   return { timezone, locale: s.locale ?? k?.locale ?? "", accept_language: s.accept_language ?? k?.accept_language ?? "" };
 }
 
-/** One line an agent can act on so its browser matches the exit. */
+/** One line an agent can act on so its browser matches the exit. Match the timezone;
+ *  keep the language English-first so pages stay readable. */
 export function localHint(s: Server): string {
   const p = localProfile(s);
   if (!p) return "";
-  return `timezone ${p.timezone}${p.locale ? `, local language ${p.locale}` : ""}${p.accept_language ? ` (Accept-Language for English pages: ${p.accept_language})` : ""}`;
+  const lang = p.accept_language ? `; keep the browser's language English-first (Accept-Language: ${p.accept_language})` : "";
+  const local = p.locale && !p.locale.startsWith("en") ? `; the local language is ${p.locale}, only for pages that should be in it` : "";
+  return `timezone ${p.timezone}${lang}${local}`;
+}
+
+/** Whether the machine's own clock matches its exit (agent machines only). */
+export function clockNote(d: Device, where: Server | undefined): string {
+  if (!d.connected || !d.timezone || !where) return "";
+  const want = localProfile(where)?.timezone;
+  if (!want) return "";
+  return d.timezone === want
+    ? `clock ${d.timezone}, matching the exit`
+    : `clock set to ${d.timezone}, not the exit's ${want}: sites can see the mismatch, so set a browser on it to ${want}`;
 }
 
 export function locationLabel(s: Pick<Server, "id" | "name">): string {
@@ -155,6 +170,8 @@ export function describeDevice(d: Device, servers: Server[]): string {
   const extras: string[] = [];
   if (d.connected && d.speed) extras.push(`speed ${describeSpeed(d.speed)}`);
   if (d.rotation) extras.push(`rotates every ${d.rotation.every_minutes} min`);
+  const clock = clockNote(d, where);
+  if (clock) extras.push(clock);
   if (d.expires_at) extras.push(`temporary, deleted ${new Date(d.expires_at * 1000).toISOString().replace(".000Z", "Z")}`);
   return `${d.name} [${d.device_id}] (${d.platform}): ${state}; ${remote}${extras.length ? `; ${extras.join("; ")}` : ""}`;
 }
@@ -330,7 +347,7 @@ export class Portveil {
     if (st.status !== "acked") return `${device.name} did not move: ${st.status}${st.result ? ` (${st.result})` : ""}. It is still on its previous location.`;
     const confirmed = await this.waitConfirmed(device.device_id, target.id);
     return confirmed
-      ? `Done. ${device.name} now exits in ${place}, confirmed by the ${place} exit server.${localHint(target) ? ` If a browser on it should look local, set its ${localHint(target)}.` : ""}`
+      ? `Done. ${device.name} now exits in ${place}, confirmed by the ${place} exit server.${localHint(target) ? ` If a browser on it should look local, use ${localHint(target)}.` : ""}`
       : `${device.name} switched to ${place}, but that exit hasn't confirmed the connection yet. Check again with get_device in a minute.`;
   }
 }

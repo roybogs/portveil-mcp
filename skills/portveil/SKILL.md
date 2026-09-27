@@ -146,8 +146,9 @@ ask the user which one they meant instead of guessing.
 2. For a move, call `move_device`. It only reports success after the device has switched and the
    exit in the new location confirms it. Tell the user the result in one line. If a browser on
    that machine should look local (sites compare a browser's timezone with its IP's country),
-   set the browser's timezone to the one the result gives; `list_locations` shows each exit's
-   timezone and language.
+   set the browser's timezone to the exit's, and keep its language English-first with the
+   Accept-Language the result gives. Don't switch the language to the local one (Finnish, say)
+   unless the user wants pages in it. `list_locations` shows each exit's settings.
 3. For rotation, confirm the interval and locations with the user, then `start_rotation`.
    Portveil runs the schedule, so it keeps going after this session ends; say so.
 4. `disconnect_device`: go ahead when the user directly asked to disconnect that specific device.
@@ -176,9 +177,14 @@ ask the user which one they meant instead of guessing.
   retry with another credential.
 - Hitting a device limit or a data allowance: check `get_account`, then the current plans at
   https://portveil.com/#pricing, before telling the user what they can do.
-- To check what sites see from a machine: `curl -s https://portveil.com/cdn-cgi/trace` gives the
-  `ip=` and `loc=`; compare the IP with https://api.portveil.com/v1/exits. People can open
-  https://portveil.com/check/ in a browser for the same check plus WebRTC and timezone.
+- Checking coverage: `list_devices` is the answer for the user's devices ("protected" means the
+  exit server confirmed the tunnel). For an agent machine, it also says whether the machine's
+  clock matches its exit's timezone. Phones and laptops on the WireGuard app don't report their
+  timezone; for those, the user opens https://portveil.com/check/ on that device (IP, WebRTC
+  and timezone).
+- To check the machine you're running on: `curl -s https://portveil.com/cdn-cgi/trace` gives
+  the `ip=` and `loc=` sites see. Compare the IP with every exit in
+  https://api.portveil.com/v1/exits, and say which exit it matches or that it matches none.
 - Never print, log or repeat the API token, the account key or a device's private key.
 
 ## Verification

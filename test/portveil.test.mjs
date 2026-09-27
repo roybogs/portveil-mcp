@@ -7,7 +7,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { wgKeypair, agentSetup, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, localHint } from "../dist/portveil.js";
+import { wgKeypair, agentSetup, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, localHint, clockNote } from "../dist/portveil.js";
 
 const SERVERS = [
   { id: "srv-us-1", name: "US West", region: "us" },
@@ -168,9 +168,9 @@ test("the MCP server lists its tools and answers through the protocol", async ()
     const moved = await c.callTool({ name: "rotate_device", arguments: { device: "scraper" } });
     assert.equal(moved.isError, undefined, moved.content[0].text);
     assert.match(moved.content[0].text, /now exits in Finland/);
-    assert.match(moved.content[0].text, /set its timezone Europe\/Helsinki, local language fi-FI/);
+    assert.match(moved.content[0].text, /use timezone Europe\/Helsinki; keep the browser's language English-first \(Accept-Language: en-US,en;q=0.9,fi;q=0.8\); the local language is fi-FI/);
     const places = (await c.callTool({ name: "list_locations", arguments: {} })).content[0].text;
-    assert.match(places, /United States \(US West\) \[srv-us-1\]: timezone America\/Los_Angeles, local language en-US/);
+    assert.match(places, /United States \(US West\) \[srv-us-1\]: timezone America\/Los_Angeles; keep the browser's language English-first \(Accept-Language: en-US,en;q=0.9\)$/m);
     assert.match(places, /Finland \(Helsinki\) \[srv-eu-1\]: timezone Europe\/Helsinki/);
     assert.equal(state.devices[0].server_id, "srv-eu-1");
     const bad = await c.callTool({ name: "move_device", arguments: { device: "toaster", location: "US" } });
@@ -272,7 +272,18 @@ test("an idle WireGuard-app device reads as idle, not unconfirmed", () => {
 
 test("an exit's timezone and language come from the API when it sends them", () => {
   assert.equal(localHint({ id: "srv-jp-1", name: "Japan", region: "ap", timezone: "Asia/Tokyo", locale: "ja-JP" }),
-    "timezone Asia/Tokyo, local language ja-JP");
+    "timezone Asia/Tokyo; the local language is ja-JP, only for pages that should be in it");
   assert.match(localHint({ id: "srv-eu-1", name: "EU", region: "eu" }), /^timezone Europe\/Helsinki/);
   assert.equal(localHint({ id: "srv-new", name: "New", region: "x" }), "");
+});
+
+test("an agent machine's clock is compared with its exit's timezone", () => {
+  const eu = { id: "srv-eu-1", name: "EU", region: "eu" };
+  const d = { device_id: "dev_a", name: "Scraper", platform: "linux", allow_remote: true, server_id: "srv-eu-1",
+    connected: true, exit_confirmed: true, quality: "good", handshake_age_s: 5, last_seen_s_ago: 3 };
+  assert.match(clockNote({ ...d, timezone: "Etc/UTC" }, eu), /clock set to Etc\/UTC, not the exit's Europe\/Helsinki: .*set a browser on it to Europe\/Helsinki/);
+  assert.equal(clockNote({ ...d, timezone: "Europe/Helsinki" }, eu), "clock Europe/Helsinki, matching the exit");
+  assert.equal(clockNote({ ...d, timezone: null }, eu), "");
+  assert.equal(clockNote({ ...d, timezone: "Etc/UTC", connected: false }, eu), "");
+  assert.match(describeDevice({ ...d, timezone: "Etc/UTC" }, [eu]), /protected, exiting in Finland \(Helsinki\); remote control on; clock set to Etc\/UTC/);
 });

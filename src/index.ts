@@ -61,7 +61,7 @@ server.registerTool("list_devices", {
 
 server.registerTool("list_locations", {
   title: "List locations",
-  description: "List the exit locations (country, city and location ID) that devices can be moved to, with each one's local timezone and language. Use it before move_device or start_rotation when you're unsure what's available, or to make a browser on a moved machine match its exit (sites compare the browser's timezone with its IP's country). Every plan can use every location. Read-only.",
+  description: "List the exit locations (country, city and location ID) that devices can be moved to, with each one's timezone and language settings. Use it before move_device or start_rotation when you're unsure what's available, or to make a browser on a moved machine match its exit (sites compare the browser's timezone with its IP's country). Every plan can use every location. Read-only.",
   annotations: { readOnlyHint: true, openWorldHint: false },
 }, () => run(async () => (await pv.servers()).map((s) => {
   const hint = localHint(s);
@@ -70,7 +70,7 @@ server.registerTool("list_locations", {
 
 server.registerTool("get_device", {
   title: "Get device",
-  description: "Get one device's current state: online or offline, the location it exits from, whether that exit server confirms the tunnel, its live speed, any rotation schedule, and when it last reported. Use it to check a device before or after an action. Read-only.",
+  description: "Get one device's current state: online or offline, the location it exits from, whether that exit server confirms the tunnel, its live speed, any rotation schedule, whether an agent machine's clock matches its exit's timezone, and when it last reported. Use it to check a device before or after an action. Read-only.",
   inputSchema: { device: deviceArg },
   annotations: { readOnlyHint: true, openWorldHint: false },
 }, ({ device }) => run(async () => {

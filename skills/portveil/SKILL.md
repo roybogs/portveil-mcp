@@ -1,7 +1,7 @@
 ---
 name: portveil
 description: See and control a Portveil VPN (WireGuard, US and Finland exits) from Hermes. Check which devices and agent machines are protected, move a machine to another country, rotate its location on a schedule, reconnect it, or add a new device. Use when the user asks whether a machine is protected, where its traffic exits, or to change or rotate its location.
-version: 1.0.1
+version: 1.0.2
 author: Portveil (github.com/roybogs/portveil-mcp)
 platforms: [linux, macos]
 metadata:
@@ -79,13 +79,15 @@ Upgrading to a paid plan with the same email keeps the account and devices.
 
 ## Setup
 
-Hermes installs npm packages only once they're 14 days old, which blocks a fresh
-`npx portveil-mcp`. Install it into its own folder instead (run from your home directory, not
-from the Hermes install folder):
+Hermes installs npm packages only once they're 14 days old, which blocks running the newest
+release through npx. Install one exact version into its own folder instead (run from your home
+directory, not from the Hermes install folder):
 
 ```bash
-cd ~ && npm install --prefix ~/.hermes/mcp-servers/portveil portveil-mcp@latest
+cd ~ && npm install --prefix ~/.hermes/mcp-servers/portveil portveil-mcp@0.4.2
 ```
+
+The version is pinned on purpose, so an update never reaches your machine unless you choose it.
 
 Put the API token in `~/.hermes/.env` (this skill asks for it on first load):
 
@@ -103,11 +105,19 @@ hermes mcp add portveil --command node \
 
 Keep `${PORTVEIL_TOKEN}` exactly as written (single quotes), so the config refers to the token in
 `.env` instead of storing it. Start a new session, then check with `hermes mcp test portveil`.
-To upgrade later, rerun the `npm install` line.
+To upgrade, check the release notes at https://github.com/roybogs/portveil-mcp/releases, then run
+the same `npm install` line with the new exact version.
 
 Token scopes: `read` can look, `control` can also move, rotate, reconnect and disconnect, `admin`
 can also add, rename and remove devices. Give Hermes the smallest scope that does the job, and
 never the account key (`cla_…`).
+
+The token stays valid until you revoke it, so treat it like a password for this machine:
+- Create a separate token just for Hermes, so it can be revoked without affecting anything else.
+- Start with `read`; move up to `control` or `admin` only when you want Hermes to act.
+- Every action is recorded in the account's activity log with the token that made it
+  (`list_activity`). If the machine Hermes runs on is ever compromised, revoke the token in the
+  dashboard (API Tokens) and create a new one.
 
 ## Tools
 

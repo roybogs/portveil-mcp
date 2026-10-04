@@ -77,7 +77,17 @@ Devices must be running the Portveil app or the Portveil agent with remote contr
 ## Security
 
 - Use a scoped API token. Every action it takes is recorded in your account's activity log with the token that made it, and you can revoke it in the dashboard at any time.
-- The server talks only to `https://api.portveil.com` (override with `PORTVEIL_API`). It stores nothing.
+- The server defaults to `https://api.portveil.com`; `PORTVEIL_API` overrides must use HTTPS (HTTP is accepted only for loopback fixtures). Redirects are refused; requests time out after 15 seconds and mutations are not automatically retried.
+- It does not persist the account/API token. `add_device` deliberately stores newly generated device keys and tunnel files in a new private directory; they are never included in tool replies. Existing folders and files are never reused or overwritten.
+- “Protected”/move/reconnect confirmation requires connected status, a fresh handshake and exit confirmation, with observations aged from their actual receipt. This is tunnel evidence, **not DNS privacy proof**. An exit IP, resolver list, or simulator UI alone is insufficient.
+
+## Local device recovery
+
+For phone/computer provisioning, choose a **new** folder. It is created with mode 0700, with 0600 `private-key`, `device.json` and per-exit `.conf` files. The key is saved and synced **before** registration; registration metadata excludes the device token. If registration's response is lost or export fails, the reply identifies the retained recovery directory and (when known) the exact device ID. Check `list_devices`/the dashboard before adding another device: the server may have committed the first registration. No automatic device deletion or blind retry occurs.
+
+Back up the whole private directory securely. Restore into a separate private directory and verify file permissions, device ID, and that the private key derives the registered public key. `device.json` plus `private-key` can regenerate the configs using the existing `wgConfig` helper; no new registration is needed. `npm test` exercises actual fixture backup/restore, byte-identical config regeneration, interrupted registration and symlink/write failures. This does **not** establish that production infrastructure backups are current or restorable.
+
+Linux setup instructions are Bash commands, not actions executed by this server. Full tunnel is designed to preserve inbound connections, but verify SSH and DNS separately in an approved isolated environment. Split tunnel reaches only Portveil's internal network: internet traffic is **not protected**. Never use setup commands to switch a working remote machine without independent management access and a guarded rollback plan.
 
 ## Development
 

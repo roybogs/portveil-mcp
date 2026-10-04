@@ -11,11 +11,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  Portveil, PortveilError, VERSION, agentSetup, describeDevice, wgConfig, wgKeypair, isWaiting, localHint, locationLabel, nextLocation, resolveDevice, resolveLocation,
+  Portveil, PortveilError, VERSION, agentSetup, describeDevice, isWaiting, localHint, locationLabel, nextLocation, resolveDevice, resolveLocation,
 } from "./portveil.js";
 
 const accountId = process.env.PORTVEIL_ACCOUNT_ID?.trim() ?? "";
@@ -33,13 +32,13 @@ const pv = new Portveil({ apiBase, accountId, token });
 const server = new McpServer({ name: "portveil", version: VERSION });
 
 type Result = { content: { type: "text"; text: string }[]; isError?: boolean };
-const ok = (text: string): Result => ({ content: [{ type: "text", text }] });
+const ok = (text: string): Result => ({ content: [{ type: "text", text: text.replaceAll(token, "[redacted]") }] });
 async function run(fn: () => Promise<string>): Promise<Result> {
   try {
     return ok(await fn());
   } catch (e) {
-    const msg = e instanceof PortveilError ? e.message : `Unexpected error: ${(e as Error).message}`;
-    return { content: [{ type: "text", text: msg }], isError: true };
+    const msg = e instanceof PortveilError ? e.message : "Portveil could not complete this operation. Check current device/activity state before retrying; private error details are not sent to chat.";
+    return { ...ok(msg), isError: true };
   }
 }
 
@@ -51,7 +50,7 @@ const deviceArg = z.string().min(1).describe('Which device: its name, a unique p
 
 server.registerTool("list_devices", {
   title: "List devices",
-  description: "List every device on the Portveil account, one line each: whether it's protected (connected AND confirmed by the exit server), which country it exits from, its live download/upload speed while connected, and whether it accepts remote control. Use this first to see what's there or to find a device's exact name; use get_device for one device. Read-only.",
+  description: "List every device on the Portveil account, one line each: whether it's tunnel-confirmed (connected, fresh handshake AND confirmed by the exit server; not a DNS privacy test), which country it exits from, its live download/upload speed while connected, and whether it accepts remote control. Use this first to see what's there or to find a device's exact name; use get_device for one device. Read-only.",
   annotations: { readOnlyHint: true, openWorldHint: false },
 }, () => run(async () => {
   const [devices, servers] = await Promise.all([pv.devices(), pv.servers()]);
@@ -162,10 +161,7 @@ server.registerTool("reconnect_device", {
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 }, ({ device }) => run(async () => {
   const d = resolveDevice(device, await pv.devices());
-  const st = await pv.runCommand(d, "reconnect");
-  if (st.status === "acked") return `${d.name} reconnected.`;
-  if (isWaiting(st.status)) return `Sent. ${d.name} hasn't picked it up yet (it may be offline).`;
-  return `${d.name} did not reconnect: ${st.status}${st.result ? ` (${st.result})` : ""}.`;
+  return pv.reconnect(d);
 }));
 
 server.registerTool("disconnect_device", {
@@ -176,7 +172,11 @@ server.registerTool("disconnect_device", {
 }, ({ device }) => run(async () => {
   const d = resolveDevice(device, await pv.devices());
   const st = await pv.runCommand(d, "disconnect");
-  if (st.status === "acked") return `${d.name} is disconnected. Its traffic no longer goes through Portveil.`;
+  if (st.status === "acked") {
+    const current = (await pv.devices()).find((device) => device.device_id === d.device_id);
+    return current && !current.connected ? `${d.name} is disconnected. Its traffic no longer goes through Portveil.`
+      : `${d.name} acknowledged disconnect, but its status has not confirmed it is off. Check get_device.`;
+  }
   if (isWaiting(st.status)) return `Sent. ${d.name} hasn't picked it up yet (it may be offline).`;
   return `${d.name} did not disconnect: ${st.status}${st.result ? ` (${st.result})` : ""}.`;
 }));
@@ -188,7 +188,7 @@ server.registerTool("add_device", {
     name: z.string().trim().min(1).max(64).describe('Display name for the new device, e.g. "Miguel iPhone" or "scraper-box"'),
     kind: z.enum(["phone_or_computer", "linux_machine"]).describe("phone_or_computer: WireGuard app on a phone or laptop. linux_machine: a Linux server or agent machine running the Portveil agent"),
     temporary_minutes: z.number().int().min(5).max(43200).optional().describe("phone_or_computer only: delete the device automatically after this many minutes (5 to 43200, i.e. 30 days). Omit for a permanent device"),
-    folder: z.string().min(1).optional().describe("phone_or_computer only: folder to save the tunnel files in. Default ~/Portveil/<name>"),
+    folder: z.string().min(1).optional().describe("phone_or_computer only: folder to save the tunnel files in. Must be a new folder; existing folders are never reused. Default ~/Portveil/<name>"),
     split_tunnel: z.boolean().optional().describe("linux_machine only, advanced: default false (full tunnel), which sends everything the machine connects to through Portveil and keeps SSH and other incoming connections on their normal route, so remote servers stay reachable. true only reaches Portveil's own network: the machine's internet traffic would NOT go through Portveil"),
   },
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -199,26 +199,17 @@ server.registerTool("add_device", {
     throw new PortveilError(`The plan's device limit is reached${slots}. Remove a device or upgrade first.`);
   }
   if (kind === "linux_machine") {
-    return `Run these as root on the machine you're adding. It makes its own VPN key, so this can't be done from here. The token prompt doesn't echo; use an admin-scope API token or the account key, and never paste it into a chat.\n\n` +
+    return `Run these in Bash as root on the machine you're adding. It makes its own VPN key, so this can't be done from here. The token prompt doesn't echo; use an admin-scope API token or the account key, and never paste it into a chat.\n\n` +
       agentSetup(apiBase, accountId, name, split_tunnel ?? false) +
-      `\n\nIts own traffic then goes through Portveil, while SSH and other incoming connections keep their normal route, so a remote session stays up. The daemon keeps running; install it as a service to survive reboots. "${name}" then appears in list_devices, and can be moved once its exit confirms it${slots}.`;
+      `\n\n${split_tunnel ? "Split tunnel: only Portveil's internal network is routed through it; internet traffic is NOT protected by Portveil." : "Full tunnel: the agent is designed to route its own traffic through Portveil and preserve inbound connections. Verify SSH and DNS routing separately before relying on it."} ` +
+      `The daemon keeps running; install it as a service to survive reboots. "${name}" then appears in list_devices, and can be moved once its exit confirms it${slots}.`;
   }
   const dir = resolve(folder?.replace(/^~(?=$|\/)/, homedir()) ?? join(homedir(), "Portveil", name.replace(/[^\w .-]+/g, "_")));
-  const k = wgKeypair();
-  const d = await pv.addDevice(name, "wireguard-app", k.pub, false, temporary_minutes);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  const files: string[] = [];
-  for (const s of d.servers) {
-    const addr = d.addresses[s.id];
-    if (!addr) continue;
-    const file = join(dir, `Portveil-${locationLabel(s).replace(/[^\w .()-]+/g, "_")}.conf`);
-    await writeFile(file, wgConfig(k.priv, addr, s), { mode: 0o600 });
-    files.push(file);
-  }
+  const { device: d, files } = await pv.addDeviceFiles(name, dir, temporary_minutes);
   const expires = d.expires_at ? ` It deletes itself at ${new Date(d.expires_at * 1000).toISOString().replace(".000Z", "Z")}.` : "";
   return `Added "${name}" [${d.device_id}].${expires} Its tunnel files are saved on the machine running this MCP server, one per location:\n` +
     files.map((f) => `- ${f}`).join("\n") +
-    `\n\nOn a Mac or PC: WireGuard → Import tunnel(s) from file. On a phone: send the files to it (AirDrop, or save to Files) and open them with WireGuard. The files hold the device's private key: keep them private and delete copies once imported. Switch countries by turning on a different tunnel in the app.`;
+    `\n\nOn a Mac or PC: WireGuard → Import tunnel(s) from file. On a phone: send the files to it (AirDrop, or save to Files) and open them with WireGuard. The .conf files and private-key hold the device's private key. Keep the directory private; device.json plus private-key can regenerate the configs. Back up securely and prove restore before deleting the only copy. Switch countries by turning on a different tunnel in the app.`;
 }));
 
 server.registerTool("update_device", {

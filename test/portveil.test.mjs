@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, stat, cp, rm, mkdir, writeFile, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { wgKeypair, agentSetup, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, localHint, clockNote } from "../dist/portveil.js";
+import { wgKeypair, wgConfig, agentSetup, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, isProtectedDevice, localHint, clockNote } from "../dist/portveil.js";
 
 const SERVERS = [
   { id: "srv-us-1", name: "US West", region: "us" },
@@ -17,7 +17,7 @@ const dev = (o) => ({ device_id: "dev_a", name: "Scraper box", platform: "linux"
   connected: true, exit_confirmed: true, quality: "good", handshake_age_s: 5, last_seen_s_ago: 3, ...o });
 
 // A tiny fake Portveil API. `state` is mutated by commands like the real one.
-function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
+function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true, registration = {} } = {}) {
   const state = { devices: [dev({ allow_remote: remote }), dev({ device_id: "dev_b", name: "Phone", platform: "wireguard-app", allow_remote: false })],
     commands: {}, seen: [] };
   const srv = http.createServer((req, res) => {
@@ -49,7 +49,7 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
         state.devices.push(dev({ device_id: "dev_new", name: b.name, platform: b.platform, allow_remote: b.allow_remote, connected: false }));
         return send(201, { device_id: "dev_new", device_token: "cld_x", expires_at: b.ttl_minutes ? 1790300000 : null,
           addresses: { "srv-us-1": "10.8.0.9/32", "srv-eu-1": "10.9.0.9/32" },
-          servers: SERVERS.map((x, i) => ({ ...x, endpoint_host: `exit${i}.example`, endpoint_port: 51820, pubkey: `PUB${i}=`, health_url: "" })) });
+          servers: SERVERS.map((x, i) => ({ ...x, endpoint_host: `exit${i}.example`, endpoint_port: 51820, pubkey: Buffer.alloc(32, i + 1).toString("base64"), health_url: "" })), ...registration });
       }
       m = u.match(/^\/v1\/accounts\/acct_0123456789abcdef\/devices\/(dev_\w+)$/);
       if (m && (req.method === "PATCH" || req.method === "DELETE")) {
@@ -75,6 +75,8 @@ function fakeApi({ remote = true, ackAfterPolls = 1, confirm = true } = {}) {
         c.polls += 1;
         if (c.polls >= ackAfterPolls) {
           if (c.type === "switch_server") { c.device.server_id = c.server_id; c.device.exit_confirmed = confirm; }
+          if (c.type === "reconnect") { c.device.connected = true; c.device.exit_confirmed = confirm; }
+          if (c.type === "disconnect") { c.device.connected = false; c.device.exit_confirmed = false; }
           return send(200, { command_id: m[1], status: "acked", result: "ok" });
         }
         return send(200, { command_id: m[1], status: c.polls === 1 ? "queued" : "delivered", result: null });
@@ -227,6 +229,9 @@ test("agent setup commands quote the name and verify the download", () => {
   const cmd = agentSetup("https://api.portveil.com", "acct_0123456789abcdef", "Bob's box", true);
   assert.match(cmd, /sha256sum -c -/);
   assert.match(cmd, /--name 'Bob'\\''s box' --split-tunnel/);
+  assert.match(cmd, /--control 'https:\/\/api\.portveil\.com' --account-id 'acct_0123456789abcdef'/);
+  assert.match(cmd, /pipefail/);
+  assert.match(cmd, /sha256sum -c -\) &&/);
   assert.doesNotMatch(agentSetup("https://api.portveil.com", "acct_0123456789abcdef", "x", false), /split-tunnel/);
 });
 
@@ -239,12 +244,12 @@ test("add_device saves private tunnel files for apps and gives Linux the setup c
   const dir = join(await mkdtemp(join(tmpdir(), "pv-")), "phone");
   try {
     await control.connect(start("clt_good"));
-    const refused = await control.callTool({ name: "add_device", arguments: { name: "Phone 2", kind: "phone_or_computer", folder: dir } });
+    const refused = await control.callTool({ name: "add_device", arguments: { name: "Phone 2", kind: "phone_or_computer", folder: dir + "-refused" } });
     assert.equal(refused.isError, true);
     assert.match(refused.content[0].text, /"admin" scope/);
     const linux = await control.callTool({ name: "add_device", arguments: { name: "scraper-2", kind: "linux_machine" } });
     assert.equal(linux.isError, undefined, linux.content[0].text);
-    assert.match(linux.content[0].text, /--account-id acct_0123456789abcdef --name 'scraper-2'\n/);
+    assert.match(linux.content[0].text, /--account-id 'acct_0123456789abcdef' --name 'scraper-2' &&\n/);
     assert.doesNotMatch(linux.content[0].text, /--split-tunnel/);   // full tunnel by default (keeps inbound SSH)
     assert.equal(state.registered, undefined, "linux setup must not register from here");
 
@@ -261,7 +266,7 @@ test("add_device saves private tunnel files for apps and gives Linux the setup c
     const key = conf.match(/PrivateKey = (.+)/)[1];
     assert.doesNotMatch(added.content[0].text, new RegExp(key.replace(/[+/=]/g, "\\$&")));
     assert.equal((await stat(us)).mode & 0o777, 0o600);
-    assert.match(await readFile(join(dir, "Portveil-Finland (Helsinki).conf"), "utf8"), /PublicKey = PUB1=/);
+    assert.match(await readFile(join(dir, "Portveil-Finland (Helsinki).conf"), "utf8"), /PublicKey = AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=/);
   } finally { await control.close(); await admin.close(); srv.close(); }
 });
 
@@ -286,4 +291,197 @@ test("an agent machine's clock is compared with its exit's timezone", () => {
   assert.equal(clockNote({ ...d, timezone: null }, eu), "");
   assert.equal(clockNote({ ...d, timezone: "Etc/UTC", connected: false }, eu), "");
   assert.match(describeDevice({ ...d, timezone: "Etc/UTC" }, [eu]), /protected, exiting in Finland \(Helsinki\); remote control on; clock set to Etc\/UTC/);
+});
+
+
+test("security: rejects credential-bearing or insecure API bases before fetching", () => {
+  for (const apiBase of ["http://api.portveil.com", "https://user:password@example.com", "https://example.com/#fragment", "file:///tmp/api"]) {
+    assert.throws(() => new Portveil({ apiBase, accountId: "acct_0123456789abcdef", token: "clt_fixture" }), /API URL/);
+  }
+});
+
+test("security: transport refuses redirects and bounds each request", async () => {
+  let options;
+  const pv = new Portveil({ apiBase: "https://fixture.invalid", accountId: "acct_0123456789abcdef", token: "clt_fixture",
+    fetch: async (_url, opts) => { options = opts; return new Response('{"servers":[]}'); } });
+  await pv.servers();
+  assert.equal(options.redirect, "error");
+  assert.ok(options.signal instanceof AbortSignal, "request needs a bounded timeout");
+});
+
+test("security: blank selectors never guess the only device or location", () => {
+  assert.throws(() => resolveDevice("   ", [dev()]), /device/);
+  assert.throws(() => resolveLocation("\t", [SERVERS[0]]), /location/);
+});
+
+test("security: tunnel export rejects injected keys hosts and addresses", () => {
+  const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  const server = { ...SERVERS[0], endpoint_host: "exit.example", endpoint_port: 51820, pubkey: key };
+  assert.match(wgConfig(key, "10.8.0.7/24", server), /Address = 10\.8\.0\.7\/32/);
+  for (const address of ["10.8..0.7", "10.8.0.7/33", "10.8.0.7/", "10.8.0.7/24/32", "10.8.0.7/24\nDNS = 8.8.8.8"]) {
+    assert.throws(() => wgConfig(key, address, server), /address/);
+  }
+  assert.throws(() => wgConfig(key, "10.8.0.7/32", { ...server, pubkey: `${key}\nEndpoint = attacker:1` }), /key/);
+  assert.throws(() => wgConfig(key, "10.8.0.7/32", { ...server, endpoint_host: "exit.example\n[Peer]" }), /endpoint/);
+  assert.throws(() => wgConfig(key, "10.8.0.7/32", { ...server, endpoint_port: 0 }), /port/);
+});
+
+test("acceptance: offline or stale exit flags are not connection confirmation", async () => {
+  for (const changes of [{ connected: false }, { quality: "poor" }, { handshake_age_s: 900 }, { handshake_age_s: null }]) {
+    const device = dev(changes);
+    const pv = new Portveil({ apiBase: "https://fixture.invalid", accountId: "acct_0123456789abcdef", token: "clt_fixture",
+      confirmTimeoutMs: 0, fetch: async () => new Response(JSON.stringify({ devices: [device] })) });
+    assert.equal(await pv.waitConfirmed(device.device_id, device.server_id), undefined);
+    assert.doesNotMatch(describeDevice(device, SERVERS), /protected, exiting/);
+  }
+});
+
+
+test("acceptance: account, reconnect, status and disconnect work through the MCP wire", async () => {
+  const { srv, state, base } = await fakeApi();
+  const c = new Client({ name: "fixture", version: "1" });
+  try {
+    await c.connect(new StdioClientTransport({ command: process.execPath, args: ["dist/index.js"],
+      env: { ...process.env, PORTVEIL_ACCOUNT_ID: "acct_0123456789abcdef", PORTVEIL_TOKEN: "clt_good", PORTVEIL_API: base } }));
+    assert.match((await c.callTool({ name: "get_account", arguments: {} })).content[0].text, /Plan: builder\. Devices: 2 of 25/);
+    assert.match((await c.callTool({ name: "reconnect_device", arguments: { device: "scraper" } })).content[0].text, /reconnected, confirmed by the exit/);
+    assert.match((await c.callTool({ name: "get_device", arguments: { device: "scraper" } })).content[0].text, /protected, exiting/);
+    assert.match((await c.callTool({ name: "disconnect_device", arguments: { device: "scraper" } })).content[0].text, /is disconnected/);
+    assert.equal(state.devices[0].connected, false);
+    assert.match((await c.callTool({ name: "get_device", arguments: { device: "scraper" } })).content[0].text, /offline/);
+    const split = await c.callTool({ name: "add_device", arguments: { name: "fixture", kind: "linux_machine", split_tunnel: true } });
+    assert.match(split.content[0].text, /internet traffic is NOT protected/);
+    assert.equal(state.registered, undefined, "Linux instructions must not register or run an agent");
+  } finally { await c.close(); srv.close(); }
+});
+
+test("reconnect ack without a fresh exit confirmation is not success", async () => {
+  const { srv, base } = await fakeApi({ confirm: false });
+  try { assert.match(await client(base).reconnect(dev()), /acknowledged reconnect, but its exit has not confirmed/); }
+  finally { srv.close(); }
+});
+
+test("provisioning refuses existing and symlink folders before registering", async () => {
+  const { srv, state, base } = await fakeApi();
+  const root = await mkdtemp(join(tmpdir(), "pv-safety-"));
+  try {
+    const existing = join(root, "existing");
+    await mkdir(existing, { mode: 0o755 });
+    const file = join(existing, "Portveil-United States (US West).conf");
+    await writeFile(file, "fixture-existing-tunnel", { mode: 0o644 });
+    const link = join(root, "link");
+    await symlink(existing, link);
+    const pv = client(base, "clt_admin");
+    for (const folder of [existing, link]) await assert.rejects(pv.addDeviceFiles("Fixture", folder), /No device was registered/);
+    assert.equal(await readFile(file, "utf8"), "fixture-existing-tunnel");
+    assert.equal((await stat(file)).mode & 0o777, 0o644);
+    assert.equal(state.seen.filter((r) => r.method === "POST").length, 0);
+  } finally { srv.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("export backup restores the registered peer and byte-identical private configs", async () => {
+  const { srv, state, base } = await fakeApi();
+  const root = await mkdtemp(join(tmpdir(), "pv-restore-"));
+  try {
+    const source = join(root, "new-device");
+    const { files } = await client(base, "clt_admin").addDeviceFiles("Fixture phone", source);
+    const original = await Promise.all(files.map((f) => readFile(f, "utf8")));
+    await cp(source, join(root, "backup"), { recursive: true });
+    await rm(source, { recursive: true });
+    const restored = join(root, "restored");
+    await cp(join(root, "backup"), restored, { recursive: true });
+    assert.equal((await stat(restored)).mode & 0o777, 0o700);
+    const key = (await readFile(join(restored, "private-key"), "utf8")).trim();
+    const der = Buffer.concat([Buffer.from("302e020100300506032b656e04220420", "hex"), Buffer.from(key, "base64")]);
+    const pub = createPublicKey(createPrivateKey({ key: der, format: "der", type: "pkcs8" })).export({ format: "der", type: "spki" }).subarray(-32).toString("base64");
+    assert.ok(pub === state.registered.peer_pubkey, "restored key belongs to the registered device");
+    const metadataText = await readFile(join(restored, "device.json"), "utf8");
+    assert.ok(!metadataText.includes("cld_"), "device token must not be copied into recovery metadata");
+    const metadata = JSON.parse(metadataText);
+    assert.equal(metadata.device_id, "dev_new");
+    assert.equal(metadata.servers.length, 2);
+    for (const [i, server] of metadata.servers.entries()) {
+      const conf = wgConfig(key, metadata.addresses[server.id], server);
+      assert.ok(conf === original[i], "metadata and restored private key regenerate the exact tunnel");
+      const restoredFile = join(restored, files[i].split("/").at(-1));
+      assert.ok(await readFile(restoredFile, "utf8") === original[i], "backup restored the exact importable config");
+      assert.equal((await stat(restoredFile)).mode & 0o777, 0o600);
+    }
+    for (const file of ["private-key", "device.json"]) assert.equal((await stat(join(restored, file))).mode & 0o777, 0o600);
+  } finally { srv.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("registration response loss retains the synced key and never auto-retries POST", async () => {
+  const { srv, state, base } = await fakeApi();
+  const root = await mkdtemp(join(tmpdir(), "pv-interrupt-"));
+  const dir = join(root, "device");
+  const pv = new Portveil({ apiBase: base, accountId: "acct_0123456789abcdef", token: "clt_admin",
+    fetch: async (url, options) => {
+      const response = await fetch(url, options);
+      if (options.method === "POST") { await response.text(); throw new Error("fixture response lost"); }
+      return response;
+    } });
+  try {
+    await assert.rejects(pv.addDeviceFiles("Fixture", dir), /registration outcome unknown/);
+    assert.equal(state.seen.filter((r) => r.method === "POST").length, 1);
+    assert.equal((await stat(join(dir, "private-key"))).mode & 0o777, 0o600);
+    const priv = (await readFile(join(dir, "private-key"), "utf8")).trim();
+    const der = Buffer.concat([Buffer.from("302e020100300506032b656e04220420", "hex"), Buffer.from(priv, "base64")]);
+    const pub = createPublicKey(createPrivateKey({ key: der, format: "der", type: "pkcs8" })).export({ format: "der", type: "spki" }).subarray(-32).toString("base64");
+    assert.ok(pub === state.registered.peer_pubkey, "the orphan candidate's exact private key is recoverable");
+  } finally { srv.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("export failure preserves recovery without following a config symlink", async () => {
+  const { srv, state, base } = await fakeApi();
+  const root = await mkdtemp(join(tmpdir(), "pv-write-failure-"));
+  const dir = join(root, "device");
+  const victim = join(root, "existing-tunnel");
+  await writeFile(victim, "fixture-must-not-change", { mode: 0o644 });
+  const pv = new Portveil({ apiBase: base, accountId: "acct_0123456789abcdef", token: "clt_admin",
+    fetch: async (url, options) => {
+      const response = await fetch(url, options);
+      if (options.method === "POST") await symlink(victim, join(dir, "Portveil-United States (US West).conf"));
+      return response;
+    } });
+  try {
+    await assert.rejects(pv.addDeviceFiles("Fixture", dir), /Setup incomplete for \[dev_new\]/);
+    assert.equal(await readFile(victim, "utf8"), "fixture-must-not-change");
+    assert.equal((await stat(victim)).mode & 0o777, 0o644);
+    assert.equal((await stat(join(dir, "private-key"))).mode & 0o777, 0o600);
+    assert.equal(JSON.parse(await readFile(join(dir, "device.json"), "utf8")).device_id, "dev_new");
+    assert.equal(state.seen.filter((r) => r.method === "POST").length, 1);
+  } finally { srv.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("malformed registration cannot inject a tunnel and retains recovery", async () => {
+  const { srv, base } = await fakeApi({ registration: { addresses: { "srv-us-1": "10.8.0.9/32\nDNS = attacker" } } });
+  const root = await mkdtemp(join(tmpdir(), "pv-bad-registration-"));
+  try {
+    const dir = join(root, "device");
+    await assert.rejects(client(base, "clt_admin").addDeviceFiles("Fixture", dir), /Invalid device address/);
+    assert.equal((await stat(join(dir, "private-key"))).mode & 0o777, 0o600);
+    await assert.rejects(stat(join(dir, "Portveil-United States (US West).conf")), /ENOENT/);
+  } finally { srv.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("API errors redact the token instead of echoing remote response text", async () => {
+  const pv = new Portveil({ apiBase: "https://fixture.invalid", accountId: "acct_0123456789abcdef", token: "clt_fixture_secret",
+    fetch: async () => new Response(JSON.stringify({ detail: "bad clt_fixture_secret" }), { status: 400 }) });
+  await assert.rejects(pv.devices(), (e) => e instanceof PortveilError && e.message.includes("[redacted]") && !e.message.includes("clt_fixture_secret"));
+});
+
+
+test("device presentation ages its original API receipt, not an unrelated later fetch", async () => {
+  const now = 1_800_000_000_000;
+  const d = dev({ handshake_age_s: 170, observed_at_ms: now });
+  assert.equal(isProtectedDevice(d, now), true);
+  assert.equal(isProtectedDevice(d, now + 11_000), false);
+  assert.equal(isProtectedDevice({ ...d, handshake_age_s: 5 }, now + 61_000), false);
+  assert.equal(isProtectedDevice(d, now - 1000), false);
+  assert.equal(isProtectedDevice(dev({ last_seen_s_ago: 1000 }), now), false);
+  const pv = new Portveil({ apiBase: "https://fixture.invalid", accountId: "acct_0123456789abcdef", token: "clt_fixture",
+    fetch: async () => new Response(JSON.stringify({ devices: [dev({ observed_at_ms: now + 99_000 })] })) });
+  const [received] = await pv.devices();
+  assert.ok(Math.abs(received.observed_at_ms - Date.now()) < 1000, "client overwrites any server-supplied receipt");
 });

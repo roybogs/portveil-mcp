@@ -3,7 +3,7 @@
 
 import { generateKeyPairSync } from "node:crypto";
 
-export const VERSION = "0.4.3";
+export const VERSION = "0.4.4";
 
 export interface Device {
   device_id: string;

@@ -7,7 +7,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { wgKeypair, agentSetup, checkApiBase, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, localHint, clockNote } from "../dist/portveil.js";
+import { wgKeypair, agentSetup, checkApiBase, wgConfig, exitDns, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, localHint, clockNote } from "../dist/portveil.js";
 
 const SERVERS = [
   { id: "srv-us-1", name: "US West", region: "us" },
@@ -294,4 +294,13 @@ test("an agent machine's clock is compared with its exit's timezone", () => {
   assert.equal(clockNote({ ...d, timezone: null }, eu), "");
   assert.equal(clockNote({ ...d, timezone: "Etc/UTC", connected: false }, eu), "");
   assert.match(describeDevice({ ...d, timezone: "Etc/UTC" }, [eu]), /protected, exiting in Finland \(Helsinki\); remote control on; clock set to Etc\/UTC/);
+});
+
+test("tunnel files use the exit's own private DNS only when valid", () => {
+  const s = { id: "x", name: "x", region: "x", endpoint_host: "1.2.3.4", endpoint_port: 51820, pubkey: "k", timezone: "", locale: "", accept_language: "" };
+  assert.match(wgConfig("p", "10.9.0.7/24", { ...s, dns: ["10.9.0.1"] }), /DNS = 10\.9\.0\.1\n/);
+  assert.match(wgConfig("p", "10.9.0.7/24", s), /DNS = 1\.1\.1\.1, 9\.9\.9\.9\n/);
+  for (const bad of [["8.8.8.8"], ["10.9.0.1\n[Peer]"], [], ["10.0.0.1", "10.0.0.2", "10.0.0.3"], ["010.0.0.1"]]) {
+    assert.deepEqual(exitDns({ ...s, dns: bad }), ["1.1.1.1", "9.9.9.9"]);
+  }
 });

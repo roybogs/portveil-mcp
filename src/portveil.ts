@@ -72,6 +72,8 @@ export interface Server {
   timezone?: string;
   locale?: string;
   accept_language?: string;
+  /** Resolvers on the exit itself, reached through the tunnel. */
+  dns?: string[];
 }
 
 /** What the API returns for a newly registered device. */
@@ -89,9 +91,28 @@ export function wgKeypair(): { priv: string; pub: string } {
   return { priv: raw(privateKey.export({ format: "der", type: "pkcs8" })), pub: raw(publicKey.export({ format: "der", type: "spki" })) };
 }
 
+export const DEFAULT_DNS = ["1.1.1.1", "9.9.9.9"];
+
+/** A private IPv4 address (10/8, 172.16/12, 192.168/16, 100.64/10), nothing else. */
+export function isPrivateIPv4(ip: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some((n, i) => n > 255 || String(n) !== m[i + 1])) return false;
+  return o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168) ||
+    (o[0] === 100 && o[1] >= 64 && o[1] <= 127);
+}
+
+/** The exit's own resolvers when the API names valid ones, otherwise the public defaults. */
+export function exitDns(s: Server): string[] {
+  const d = s.dns;
+  return Array.isArray(d) && d.length >= 1 && d.length <= 2 && d.every((x) => typeof x === "string" && isPrivateIPv4(x))
+    ? d : DEFAULT_DNS;
+}
+
 /** The WireGuard app tunnel file for one exit, the same as the setup page makes. */
 export function wgConfig(priv: string, address: string, s: Required<Server>): string {
-  return `[Interface]\nPrivateKey = ${priv}\nAddress = ${address.split("/")[0]}/32\nDNS = 1.1.1.1, 9.9.9.9\nMTU = 1420\n\n` +
+  return `[Interface]\nPrivateKey = ${priv}\nAddress = ${address.split("/")[0]}/32\nDNS = ${exitDns(s).join(", ")}\nMTU = 1420\n\n` +
     `[Peer]\nPublicKey = ${s.pubkey}\nEndpoint = ${s.endpoint_host}:${s.endpoint_port}\n` +
     `AllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n`;
 }

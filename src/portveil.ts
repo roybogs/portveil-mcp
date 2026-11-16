@@ -5,6 +5,21 @@ import { generateKeyPairSync } from "node:crypto";
 
 export const VERSION = "0.4.4";
 
+/** How long one API request may take before it's abandoned. */
+export const REQUEST_TIMEOUT_MS = 20_000;
+
+/** The API base URL, refusing plain http (the token would travel unencrypted) except to this machine. */
+export function checkApiBase(raw: string): string {
+  const base = raw.trim().replace(/\/+$/, "");
+  let url: URL;
+  try { url = new URL(base); } catch { throw new PortveilError(`PORTVEIL_API isn't a valid URL: ${raw}`); }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
+    throw new PortveilError("PORTVEIL_API must start with https:// so the API token is never sent unencrypted.");
+  }
+  return base;
+}
+
 export interface Device {
   device_id: string;
   name: string;
@@ -90,7 +105,7 @@ export function agentSetup(apiBase: string, accountId: string, name: string, spl
     "curl -fsSL https://portveil.com/downloads/portveil-agent.sha256 | sha256sum -c -",
     "chmod +x portveil-agent",
     "read -rsp 'Admin API token or account key: ' PORTVEIL_ACCOUNT_TOKEN && export PORTVEIL_ACCOUNT_TOKEN && echo",
-    `./portveil-agent register --control ${apiBase} --account-id ${accountId} --name ${q(name)}${splitTunnel ? " --split-tunnel" : ""}`,
+    `./portveil-agent register --control ${q(apiBase)} --account-id ${q(accountId)} --name ${q(name)}${splitTunnel ? " --split-tunnel" : ""}`,
     "./portveil-agent daemon",
   ].join("\n");
 }
@@ -227,16 +242,24 @@ export class Portveil {
   private sleep(ms: number) { return this.o.sleep ? this.o.sleep(ms) : new Promise<void>((r) => setTimeout(r, ms)); }
 
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await this.doFetch(this.o.apiBase + path, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.o.token}`,
-        "Content-Type": "application/json",
-        // Cloudflare in front of the API rejects generic clients (error 1010).
-        "User-Agent": `portveil-mcp/${VERSION} (+https://portveil.com)`,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await this.doFetch(this.o.apiBase + path, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.o.token}`,
+          "Content-Type": "application/json",
+          // Cloudflare in front of the API rejects generic clients (error 1010).
+          "User-Agent": `portveil-mcp/${VERSION} (+https://portveil.com)`,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        // A hung connection must not hang the assistant's tool call forever.
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (e) {
+      if ((e as Error)?.name === "TimeoutError") throw new PortveilError(`Portveil didn't answer within ${REQUEST_TIMEOUT_MS / 1000} s. Try again in a moment.`);
+      throw new PortveilError(`Couldn't reach Portveil: ${(e as Error)?.message ?? e}.`);
+    }
     const text = await res.text();
     let data: any = {};
     try { data = text ? JSON.parse(text) : {}; } catch { /* non-JSON error page */ }

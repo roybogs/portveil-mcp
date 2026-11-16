@@ -11,11 +11,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  Portveil, PortveilError, VERSION, agentSetup, describeDevice, wgConfig, wgKeypair, isWaiting, localHint, locationLabel, nextLocation, resolveDevice, resolveLocation,
+  Portveil, PortveilError, VERSION, agentSetup, checkApiBase, describeDevice, wgConfig, wgKeypair, isWaiting, localHint, locationLabel, nextLocation, resolveDevice, resolveLocation,
 } from "./portveil.js";
 
 const accountId = process.env.PORTVEIL_ACCOUNT_ID?.trim() ?? "";
@@ -28,7 +28,13 @@ if (token.startsWith("cla_")) {
   console.error("portveil-mcp: warning: that's your account key. Create a scoped API token in the dashboard instead, so an assistant never holds full access.");
 }
 
-const apiBase = (process.env.PORTVEIL_API || "https://api.portveil.com").replace(/\/+$/, "");
+let apiBase: string;
+try {
+  apiBase = checkApiBase(process.env.PORTVEIL_API || "https://api.portveil.com");
+} catch (e) {
+  console.error(`portveil-mcp: ${(e as Error).message}`);
+  process.exit(1);
+}
 const pv = new Portveil({ apiBase, accountId, token });
 const server = new McpServer({ name: "portveil", version: VERSION });
 
@@ -204,16 +210,37 @@ server.registerTool("add_device", {
       `\n\nIts own traffic then goes through Portveil, while SSH and other incoming connections keep their normal route, so a remote session stays up. The daemon keeps running; install it as a service to survive reboots. "${name}" then appears in list_devices, and can be moved once its exit confirms it${slots}.`;
   }
   const dir = resolve(folder?.replace(/^~(?=$|\/)/, homedir()) ?? join(homedir(), "Portveil", name.replace(/[^\w .-]+/g, "_")));
+  // Make sure the folder is writable BEFORE using a device slot: otherwise the
+  // device would exist on the account with its only private key lost.
+  try {
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    const probe = join(dir, ".portveil-write-test");
+    await writeFile(probe, "", { mode: 0o600 });
+    await rm(probe, { force: true });
+  } catch (e) {
+    throw new PortveilError(`Can't save tunnel files in ${dir} (${(e as Error).message}). Nothing was added; pick another folder.`);
+  }
   const k = wgKeypair();
   const d = await pv.addDevice(name, "wireguard-app", k.pub, false, temporary_minutes);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
   const files: string[] = [];
-  for (const s of d.servers) {
-    const addr = d.addresses[s.id];
-    if (!addr) continue;
-    const file = join(dir, `Portveil-${locationLabel(s).replace(/[^\w .()-]+/g, "_")}.conf`);
-    await writeFile(file, wgConfig(k.priv, addr, s), { mode: 0o600 });
-    files.push(file);
+  try {
+    for (const s of d.servers) {
+      const addr = d.addresses[s.id];
+      if (!addr) continue;
+      const file = join(dir, `Portveil-${locationLabel(s).replace(/[^\w .()-]+/g, "_")}.conf`);
+      await writeFile(file, wgConfig(k.priv, addr, s), { mode: 0o600 });
+      await chmod(file, 0o600); // the mode above only applies to new files; an old file keeps its own
+      files.push(file);
+    }
+  } catch (e) {
+    // The key exists only in memory here, so the new device can never connect: take it back off the account.
+    const why = (e as Error).message;
+    try {
+      await pv.removeDevice(d.device_id);
+    } catch {
+      throw new PortveilError(`Added "${name}" [${d.device_id}] but couldn't save its tunnel files (${why}), and removing it again failed. Remove it with remove_device or in the dashboard, then try again.`);
+    }
+    throw new PortveilError(`Couldn't save the tunnel files (${why}), so "${name}" was removed again. Nothing was added.`);
   }
   const expires = d.expires_at ? ` It deletes itself at ${new Date(d.expires_at * 1000).toISOString().replace(".000Z", "Z")}.` : "";
   return `Added "${name}" [${d.device_id}].${expires} Its tunnel files are saved on the machine running this MCP server, one per location:\n` +

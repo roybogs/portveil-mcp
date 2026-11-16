@@ -5,6 +5,21 @@ import { generateKeyPairSync } from "node:crypto";
 
 export const VERSION = "0.4.4";
 
+/** How long one API request may take before it's abandoned. */
+export const REQUEST_TIMEOUT_MS = 20_000;
+
+/** The API base URL, refusing plain http (the token would travel unencrypted) except to this machine. */
+export function checkApiBase(raw: string): string {
+  const base = raw.trim().replace(/\/+$/, "");
+  let url: URL;
+  try { url = new URL(base); } catch { throw new PortveilError(`PORTVEIL_API isn't a valid URL: ${raw}`); }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
+    throw new PortveilError("PORTVEIL_API must start with https:// so the API token is never sent unencrypted.");
+  }
+  return base;
+}
+
 export interface Device {
   device_id: string;
   name: string;
@@ -57,6 +72,8 @@ export interface Server {
   timezone?: string;
   locale?: string;
   accept_language?: string;
+  /** Resolvers on the exit itself, reached through the tunnel. */
+  dns?: string[];
 }
 
 /** What the API returns for a newly registered device. */
@@ -74,9 +91,28 @@ export function wgKeypair(): { priv: string; pub: string } {
   return { priv: raw(privateKey.export({ format: "der", type: "pkcs8" })), pub: raw(publicKey.export({ format: "der", type: "spki" })) };
 }
 
+export const DEFAULT_DNS = ["1.1.1.1", "9.9.9.9"];
+
+/** A private IPv4 address (10/8, 172.16/12, 192.168/16, 100.64/10), nothing else. */
+export function isPrivateIPv4(ip: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some((n, i) => n > 255 || String(n) !== m[i + 1])) return false;
+  return o[0] === 10 || (o[0] === 172 && o[1] >= 16 && o[1] <= 31) || (o[0] === 192 && o[1] === 168) ||
+    (o[0] === 100 && o[1] >= 64 && o[1] <= 127);
+}
+
+/** The exit's own resolvers when the API names valid ones, otherwise the public defaults. */
+export function exitDns(s: Server): string[] {
+  const d = s.dns;
+  return Array.isArray(d) && d.length >= 1 && d.length <= 2 && d.every((x) => typeof x === "string" && isPrivateIPv4(x))
+    ? d : DEFAULT_DNS;
+}
+
 /** The WireGuard app tunnel file for one exit, the same as the setup page makes. */
 export function wgConfig(priv: string, address: string, s: Required<Server>): string {
-  return `[Interface]\nPrivateKey = ${priv}\nAddress = ${address.split("/")[0]}/32\nDNS = 1.1.1.1, 9.9.9.9\nMTU = 1420\n\n` +
+  return `[Interface]\nPrivateKey = ${priv}\nAddress = ${address.split("/")[0]}/32\nDNS = ${exitDns(s).join(", ")}\nMTU = 1420\n\n` +
     `[Peer]\nPublicKey = ${s.pubkey}\nEndpoint = ${s.endpoint_host}:${s.endpoint_port}\n` +
     `AllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25\n`;
 }
@@ -90,7 +126,7 @@ export function agentSetup(apiBase: string, accountId: string, name: string, spl
     "curl -fsSL https://portveil.com/downloads/portveil-agent.sha256 | sha256sum -c -",
     "chmod +x portveil-agent",
     "read -rsp 'Admin API token or account key: ' PORTVEIL_ACCOUNT_TOKEN && export PORTVEIL_ACCOUNT_TOKEN && echo",
-    `./portveil-agent register --control ${apiBase} --account-id ${accountId} --name ${q(name)}${splitTunnel ? " --split-tunnel" : ""}`,
+    `./portveil-agent register --control ${q(apiBase)} --account-id ${q(accountId)} --name ${q(name)}${splitTunnel ? " --split-tunnel" : ""}`,
     "./portveil-agent daemon",
   ].join("\n");
 }
@@ -227,16 +263,24 @@ export class Portveil {
   private sleep(ms: number) { return this.o.sleep ? this.o.sleep(ms) : new Promise<void>((r) => setTimeout(r, ms)); }
 
   private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await this.doFetch(this.o.apiBase + path, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.o.token}`,
-        "Content-Type": "application/json",
-        // Cloudflare in front of the API rejects generic clients (error 1010).
-        "User-Agent": `portveil-mcp/${VERSION} (+https://portveil.com)`,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await this.doFetch(this.o.apiBase + path, {
+        method,
+        headers: {
+          Authorization: `Bearer ${this.o.token}`,
+          "Content-Type": "application/json",
+          // Cloudflare in front of the API rejects generic clients (error 1010).
+          "User-Agent": `portveil-mcp/${VERSION} (+https://portveil.com)`,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        // A hung connection must not hang the assistant's tool call forever.
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+    } catch (e) {
+      if ((e as Error)?.name === "TimeoutError") throw new PortveilError(`Portveil didn't answer within ${REQUEST_TIMEOUT_MS / 1000} s. Try again in a moment.`);
+      throw new PortveilError(`Couldn't reach Portveil: ${(e as Error)?.message ?? e}.`);
+    }
     const text = await res.text();
     let data: any = {};
     try { data = text ? JSON.parse(text) : {}; } catch { /* non-JSON error page */ }

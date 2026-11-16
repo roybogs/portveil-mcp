@@ -7,7 +7,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { wgKeypair, agentSetup, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, localHint, clockNote } from "../dist/portveil.js";
+import { wgKeypair, agentSetup, checkApiBase, wgConfig, exitDns, Portveil, resolveDevice, resolveLocation, nextLocation, PortveilError, describeDevice, localHint, clockNote } from "../dist/portveil.js";
 
 const SERVERS = [
   { id: "srv-us-1", name: "US West", region: "us" },
@@ -230,6 +230,14 @@ test("agent setup commands quote the name and verify the download", () => {
   assert.doesNotMatch(agentSetup("https://api.portveil.com", "acct_0123456789abcdef", "x", false), /split-tunnel/);
 });
 
+test("the API address must be https, except on this machine", () => {
+  assert.equal(checkApiBase("https://api.portveil.com/"), "https://api.portveil.com");
+  assert.equal(checkApiBase("http://127.0.0.1:8080"), "http://127.0.0.1:8080");
+  assert.throws(() => checkApiBase("http://api.portveil.com"), /https/);
+  assert.throws(() => checkApiBase("not a url"), /valid URL/);
+  assert.match(agentSetup("https://x.example/a b", "acct_0123456789abcdef", "n", false), /--control 'https:\/\/x\.example\/a b'/);
+});
+
 test("add_device saves private tunnel files for apps and gives Linux the setup commands", async () => {
   const { srv, state, base } = await fakeApi();
   const start = (token) => new StdioClientTransport({ command: process.execPath, args: ["dist/index.js"],
@@ -244,7 +252,7 @@ test("add_device saves private tunnel files for apps and gives Linux the setup c
     assert.match(refused.content[0].text, /"admin" scope/);
     const linux = await control.callTool({ name: "add_device", arguments: { name: "scraper-2", kind: "linux_machine" } });
     assert.equal(linux.isError, undefined, linux.content[0].text);
-    assert.match(linux.content[0].text, /--account-id acct_0123456789abcdef --name 'scraper-2'\n/);
+    assert.match(linux.content[0].text, /--account-id 'acct_0123456789abcdef' --name 'scraper-2'\n/);
     assert.doesNotMatch(linux.content[0].text, /--split-tunnel/);   // full tunnel by default (keeps inbound SSH)
     assert.equal(state.registered, undefined, "linux setup must not register from here");
 
@@ -286,4 +294,13 @@ test("an agent machine's clock is compared with its exit's timezone", () => {
   assert.equal(clockNote({ ...d, timezone: null }, eu), "");
   assert.equal(clockNote({ ...d, timezone: "Etc/UTC", connected: false }, eu), "");
   assert.match(describeDevice({ ...d, timezone: "Etc/UTC" }, [eu]), /protected, exiting in Finland \(Helsinki\); remote control on; clock set to Etc\/UTC/);
+});
+
+test("tunnel files use the exit's own private DNS only when valid", () => {
+  const s = { id: "x", name: "x", region: "x", endpoint_host: "1.2.3.4", endpoint_port: 51820, pubkey: "k", timezone: "", locale: "", accept_language: "" };
+  assert.match(wgConfig("p", "10.9.0.7/24", { ...s, dns: ["10.9.0.1"] }), /DNS = 10\.9\.0\.1\n/);
+  assert.match(wgConfig("p", "10.9.0.7/24", s), /DNS = 1\.1\.1\.1, 9\.9\.9\.9\n/);
+  for (const bad of [["8.8.8.8"], ["10.9.0.1\n[Peer]"], [], ["10.0.0.1", "10.0.0.2", "10.0.0.3"], ["010.0.0.1"]]) {
+    assert.deepEqual(exitDns({ ...s, dns: bad }), ["1.1.1.1", "9.9.9.9"]);
+  }
 });
